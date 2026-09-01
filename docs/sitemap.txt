@@ -1,0 +1,5 @@
+docs/getting-started.md
+docs/strategy.md
+docs/api-reference.md
+docs/faq.md
+docs/security.md

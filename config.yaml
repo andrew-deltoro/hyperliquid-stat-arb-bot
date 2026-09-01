@@ -1,0 +1,10 @@
+# Hyperliquid Statistical Arbitrage Bot Configuration
+coin: ETH
+network: testnet
+size: 0.01
+risk:
+  max_position_usd: 10000
+  max_daily_loss_usd: 500
+  max_leverage: 5
+params:
+  # Build a stat arb bot on correlated Hyperliquid perp pairs. Track spread z-score, enter mean-reversio
