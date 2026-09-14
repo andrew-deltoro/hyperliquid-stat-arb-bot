@@ -1,8 +1,41 @@
+# ---- Python ----
 __pycache__/
 *.py[cod]
-.venv/
-.env
 *.egg-info/
-dist/
-build/
+.pytest_cache/
+.mypy_cache/
+
+# ---- Virtual environments ----
+.venv/
+.venv-linux/
+venv/
+env/
+
+# ---- Secrets (NEVER commit) ----
+.env
+*.key
+*.pem
+
+# ---- Runtime state (regenerated on every deploy) ----
+state/
+logs/
+reports/*.csv
+reports/*.log
+reports/*.png
+nohup.out
+
+# ---- Archives ----
+hlbot.tar.gz
+*.tar.gz
+
+# ---- OS / Editor ----
 .DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# ---- Allow .gitkeep placeholders through ----
+!state/.gitkeep
+!logs/.gitkeep
+!reports/.gitkeep
