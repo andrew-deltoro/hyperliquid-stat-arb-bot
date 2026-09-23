@@ -8,6 +8,10 @@ pairs:
   - ["UNI", "SUSHI"]
   - ["ETH", "BTC"]
   - ["SOL", "AVAX"]
+  - ["APT", "SUI"]
+  - ["AAVE", "COMP"]
+  - ["ARB", "OP"]
+  - ["INJ", "TIA"]
 
 data:
   interval: "1h"
@@ -35,8 +39,8 @@ position:
 
 # Portfolio-level risk limits
 risk:
-  max_concurrent_positions: 3
-  max_total_notional: 300.0
+  max_concurrent_positions: 5
+  max_total_notional: 500.0
 
 # Population prior on kappa (from multilevel OU fit, see test_multilevel_ou.py)
 ou_prior:
