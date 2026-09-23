@@ -39,3 +39,4 @@ Thumbs.db
 !state/.gitkeep
 !logs/.gitkeep
 !reports/.gitkeep
+hlbot-status.sh
