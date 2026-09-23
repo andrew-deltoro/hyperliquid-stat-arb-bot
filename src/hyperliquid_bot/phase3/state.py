@@ -20,7 +20,6 @@ class Position:
     coin_b: str
     direction: str               # "LONG_A_SHORT_B" or "SHORT_A_LONG_B"
     beta_entry: float
-    beta_sd_entry: float = 0.0
     entry_alpha: float
     entry_mean_raw: float
     entry_sigma_raw: float
@@ -36,6 +35,7 @@ class Position:
     leg_a_usd: float
     leg_b_usd: float
     status: str = "open"         # "open", "closed"
+    beta_sd_entry: float = 0.0
     exit_reason: Optional[str] = None
     exit_spread: Optional[float] = None
     exit_time_iso: Optional[str] = None
