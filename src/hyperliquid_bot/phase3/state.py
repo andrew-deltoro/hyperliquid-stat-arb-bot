@@ -20,6 +20,7 @@ class Position:
     coin_b: str
     direction: str               # "LONG_A_SHORT_B" or "SHORT_A_LONG_B"
     beta_entry: float
+    beta_sd_entry: float = 0.0
     entry_alpha: float
     entry_mean_raw: float
     entry_sigma_raw: float

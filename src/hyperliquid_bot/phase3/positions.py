@@ -95,6 +95,7 @@ class PositionManager:
 
         pos_dict = pos.__dict__
         pos_dict["p_revert_at_entry"] = sig.p_revert
+        pos_dict["beta_sd_entry"] = sig.beta_sd
 
         sign_a = "buy" if sig.direction == "LONG_A_SHORT_B" else "sell"
         sign_b = "sell" if sig.direction == "LONG_A_SHORT_B" else "buy"
@@ -173,12 +174,15 @@ class PositionManager:
         if datetime.now(timezone.utc) >= _parse_iso(pos["time_stop_iso"]):
             return close("time_stop")
 
-        # --- 4. BETA DRIFT STOP ---
+        # --- 4. BETA DRIFT STOP (posterior-aware) ---
+        # Only exit if the fresh beta is BOTH statistically improbable
+        # (>2 posterior sds from entry) AND economically large (>20% drift).
         if fresh_beta is not None:
-            beta_shift = abs(fresh_beta - pos["beta_entry"]) / (
-                abs(pos["beta_entry"]) + 1e-9
-            )
-            if beta_shift > self.cfg.position["beta_shift_max"]:
+            beta_entry = pos["beta_entry"]
+            beta_sd = pos.get("beta_sd_entry", 0.0)
+            rel_drift = abs(fresh_beta - beta_entry) / (abs(beta_entry) + 1e-9)
+            posterior_drift = abs(fresh_beta - beta_entry) / (beta_sd + 1e-9)
+            if rel_drift > 0.20 and posterior_drift > 2.0:
                 return close("beta_shift")
 
         # Still open
