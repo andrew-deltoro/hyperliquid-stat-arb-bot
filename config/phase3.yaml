@@ -4,7 +4,7 @@
 # Sourced from reports/scan_*.csv top scorers.
 pairs:
   - ["LINK", "PYTH"]
-  - ["SEI", "SUI"]
+#  - ["SEI", "SUI"]
   - ["UNI", "SUSHI"]
   - ["ETH", "BTC"]
   - ["SOL", "AVAX"]
