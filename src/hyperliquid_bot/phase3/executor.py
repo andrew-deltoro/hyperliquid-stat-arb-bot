@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .testnet_safeguards import Safeguards, REPO_ROOT
+from .testnet_safeguards import Safeguards
+from .paths import STATE_DIR
 
 
 @dataclass
@@ -167,7 +168,7 @@ class LiveExecutor(BaseExecutor):
 
     def _current_total_notional(self) -> float:
         import json
-        state_path = REPO_ROOT / "state" / "positions.json"
+        state_path = STATE_DIR / "positions.json"
         if not state_path.exists():
             return 0.0
         with open(state_path) as f:
@@ -196,14 +197,47 @@ class LiveExecutor(BaseExecutor):
 
         # --- Place order ---
         is_buy = order.side == "buy"
+
+        # Round size to exchange precision (szDecimals per asset).
+        # Hyperliquid rejects sizes with too many decimals.
+        try:
+            meta = self.info.meta()
+            sz_decimals = None
+            for asset in meta.get("universe", []):
+                if asset.get("name") == order.coin:
+                    sz_decimals = int(asset.get("szDecimals", 0))
+                    break
+            if sz_decimals is None:
+                # Fallback: assume 2 decimals for unknown assets
+                sz_decimals = 2
+            rounded_size = round(order.size, sz_decimals)
+            if rounded_size <= 0:
+                raise ValueError(
+                    f"rounded size {rounded_size} is zero for {order.coin} "
+                    f"(raw={order.size}, szDecimals={sz_decimals})"
+                )
+        except Exception as e:
+            self.log_fn(
+                f"[LIVE-EXECUTOR] ERROR sizing {order.coin}: {e}"
+            )
+            return Fill(
+                coin=order.coin, side=order.side, size=order.size,
+                price=ref_price, notional_usd=order.notional_usd,
+                tag=order.tag,
+                timestamp_iso=datetime.now(timezone.utc).isoformat(),
+                simulated=False, status="error", error=str(e),
+            )
+
         try:
             slippage = float(
                 self.cfg.raw.get("executor", {})
                 .get("slippage_tolerance", 0.03)
             )
             result = self.exchange.market_open(
-                order.coin, is_buy, order.size, ref_price, slippage,
+                order.coin, is_buy, rounded_size, ref_price, slippage,
             )
+
+
         except Exception as e:
             self.log_fn(f"[LIVE-EXECUTOR] ERROR placing {order.tag}: {e}")
             return Fill(
@@ -254,7 +288,7 @@ class LiveExecutor(BaseExecutor):
                         error_msg = f"non-dict status: {first}"
 
         fill = Fill(
-            coin=order.coin, side=order.side, size=order.size,
+            coin=order.coin, side=order.side, size=rounded.size,
             price=ref_price, notional_usd=order.notional_usd,
             tag=order.tag,
             timestamp_iso=datetime.now(timezone.utc).isoformat(),

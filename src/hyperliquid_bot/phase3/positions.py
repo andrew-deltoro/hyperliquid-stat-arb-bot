@@ -103,17 +103,43 @@ class PositionManager:
         size_a = leg_a_usd / (price_a + 1e-12)
         size_b = leg_b_usd / (price_b + 1e-12)
 
-        self.executor.place_order(
+        # --- Place leg A ---
+        fill_a = self.executor.place_order(
             Order(coin=sig.coin_a, side=sign_a, size=size_a,
                   notional_usd=leg_a_usd, tag="arb_open"),
             ref_price=price_a,
         )
-        self.executor.place_order(
+        if fill_a.status != "filled":
+            return {
+                "opened": False,
+                "reason": f"leg A ({sig.coin_a}) failed: {fill_a.error}",
+            }
+
+        # --- Place leg B ---
+        fill_b = self.executor.place_order(
             Order(coin=sig.coin_b, side=sign_b, size=size_b,
                   notional_usd=leg_b_usd, tag="arb_open"),
             ref_price=price_b,
         )
+        if fill_b.status != "filled":
+            # Roll back leg A: place a closing order
+            self.log_fn(
+                f"[POSITION] leg B ({sig.coin_b}) failed — "
+                f"rolling back leg A ({sig.coin_a})"
+            )
+            close_side_a = "sell" if sign_a == "buy" else "buy"
+            self.executor.place_order(
+                Order(coin=sig.coin_a, side=close_side_a,
+                      size=size_a, notional_usd=leg_a_usd,
+                      tag="arb_rollback"),
+                ref_price=price_a,
+            )
+            return {
+                "opened": False,
+                "reason": f"leg B ({sig.coin_b}) failed: {fill_b.error}",
+            }
 
+        # --- Both legs filled: record position ---
         self.state.positions.append(pos_dict)
         save_state(self.state)
         return {"opened": True, "position": pos_dict}

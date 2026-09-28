@@ -15,11 +15,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-STATE_DIR = REPO_ROOT / "state"
-DAILY_ORDERS_FILE = STATE_DIR / "daily_orders.json"
-KILL_SWITCH_PATH = REPO_ROOT / "KILL"
+from .paths import STATE_DIR, KILL_SWITCH_PATH, RUNTIME_DIR
 
+REPO_ROOT = RUNTIME_DIR
+DAILY_ORDERS_FILE = STATE_DIR / "daily_orders.json"
 
 @dataclass
 class SafeguardResult:

@@ -40,3 +40,5 @@ Thumbs.db
 !logs/.gitkeep
 !reports/.gitkeep
 hlbot-status.sh
+*.bak
+*.tmp

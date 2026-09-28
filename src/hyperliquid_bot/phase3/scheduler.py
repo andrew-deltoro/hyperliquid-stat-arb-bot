@@ -23,10 +23,10 @@ def run_cycle(config_path=None, log_path=None):
 
     if log_path is None:
         from datetime import datetime
-        logs_dir = Path(__file__).resolve().parent.parent.parent.parent / "logs"
-        logs_dir.mkdir(exist_ok=True)
+        from .paths import LOGS_DIR
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_path = logs_dir / f"cycle_{stamp}.log"
+        log_path = LOGS_DIR / f"cycle_{stamp}.log"
 
     with open(log_path, "w") as fh:
         _log(f"=== Cycle start: {log_path.name} ===", fh)

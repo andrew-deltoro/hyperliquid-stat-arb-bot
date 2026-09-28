@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from .paths import STATE_DIR, RUNTIME_DIR
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-STATE_DIR = REPO_ROOT / "state"
+REPO_ROOT = RUNTIME_DIR
 POSITIONS_FILE = STATE_DIR / "positions.json"
 
 

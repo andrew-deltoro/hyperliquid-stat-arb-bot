@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Optional
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-REPORTS_DIR = REPO_ROOT / "reports"
+from .paths import REPORTS_DIR
+
 TRADES_FILE = REPORTS_DIR / "trades.csv"
 SIGNALS_FILE = REPORTS_DIR / "signals.csv"
 
