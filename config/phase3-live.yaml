@@ -1,0 +1,57 @@
+# Phase 3 LIVE config — mainnet execution with tiny safeguards
+# Scale by editing the safeguards block only.
+
+pairs:
+  - ["LINK", "PYTH"]
+  - ["UNI", "SUSHI"]
+  - ["ETH", "BTC"]
+  - ["SOL", "AVAX"]
+  - ["AAVE", "COMP"]
+
+data:
+  interval: "1h"
+  lookback_hours: 720
+
+model:
+  coint_draws: 500
+  coint_tune: 500
+  ou_draws: 500
+  ou_tune: 500
+  chains: 4
+
+signal:
+  z_entry_min: 1.5
+  edge_min: 0.05
+
+position:
+  base_notional: 1000.0
+  target_frac: 0.5
+  exit_horizon_mult: 2.0
+  stop_mult: 3.0
+  beta_shift_max: 0.20
+
+risk:
+  max_concurrent_positions: 2       # start small
+  max_total_notional: 50.0          # $50 total exposure on day 1
+
+executor:
+  mode: "live"
+  private_key_env: "HL_PRIVATE_KEY"
+  account_address_env: "HL_ACCOUNT_ADDRESS"
+  network: "mainnet"
+  slippage_tolerance: 0.01          # 1% tighter than testnet
+
+safeguards:
+  max_notional_per_order: 10.0      # $10 per order on day 1
+  max_total_exposure_usd: 50.0      # $50 total on day 1
+  max_daily_orders: 6               # 6 orders/day cap
+
+fees:
+  taker_fee_pct: 0.00045
+  maker_fee_pct: 0.00015
+  default_fee_pct: 0.00045
+  slippage_bps: 3
+
+ou_prior:
+  kappa_pop: 0.0115
+  kappa_pop_sd: 0.0040
