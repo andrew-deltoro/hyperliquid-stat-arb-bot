@@ -61,3 +61,9 @@ safeguards:
   max_notational_per_order: 50.0
   max_total_exposure_usd: 100.0
   max_daily_orders: 20
+
+fees:
+  taker_fee_pct: 0.00045       # 0.045% per side (Hyperliquid taker)
+  maker_fee_pct: 0.00015       # 0.015% per side (Hyperliquid maker)
+  default_fee_pct: 0.00045     # assume taker (market orders)
+  slippage_bps: 3              # 3 basis points = 0.03% adverse per side

@@ -111,33 +111,43 @@ def log_signal(sig) -> None:
     _append_row(SIGNALS_FILE, SIGNALS_COLUMNS, row)
 
 
-def compute_pnl(pos: dict, exit_price_a: float, exit_price_b: float) -> tuple[float, float]:
+def compute_pnl(
+    pos: dict,
+    exit_price_a: float,
+    exit_price_b: float,
+    fee_pct: float = 0.00045,
+    slippage_bps: float = 3.0,
+) -> tuple[float, float]:
     """
-    Compute realized P&L in USD and as a percentage of deployed notional.
+    Realized P&L in USD and pct of deployed notional, NET of fees + slippage.
 
-    Direction:
-      LONG_A_SHORT_B: long A, short B
-      SHORT_A_LONG_B: short A, long B
+    LONG_A_SHORT_B: long A, short B
+    SHORT_A_LONG_B: short A, long B
 
-    Returns (pnl_usd, pnl_pct).
+    Cost model:
+      - fee_pct applied to notional on entry AND exit
+      - slippage_bps applied to notional on entry AND exit
     """
     sign_a = 1.0 if pos["direction"] == "LONG_A_SHORT_B" else -1.0
     sign_b = -sign_a
 
-    entry_a = pos["entry_price_a"]
-    entry_b = pos["entry_price_b"]
-
-    # Notional per leg — use stored values
     leg_a = pos["leg_a_usd"]
     leg_b = pos["leg_b_usd"]
 
-    # Simple P&L on each leg (no fees, no funding for now)
-    pnl_a = leg_a * sign_a * (exit_price_a / entry_a - 1.0)
-    pnl_b = leg_b * sign_b * (exit_price_b / entry_b - 1.0)
+    pnl_a = leg_a * sign_a * (exit_price_a / pos["entry_price_a"] - 1.0)
+    pnl_b = leg_b * sign_b * (exit_price_b / pos["entry_price_b"] - 1.0)
+    gross_pnl = pnl_a + pnl_b
 
-    pnl_usd = pnl_a + pnl_b
-    pnl_pct = pnl_usd / (pos["notional_usd"] + 1e-9)
-    return pnl_usd, pnl_pct
+    # Round-trip cost model:
+    #   fee:     notional × fee_pct × 2 sides
+    #   slippage: notional × (bps/10000) × 2 sides
+    notional_total = leg_a + leg_b
+    fee_cost = notional_total * fee_pct * 2.0
+    slippage_cost = notional_total * (slippage_bps / 10000.0) * 2.0
+
+    net_pnl = gross_pnl - fee_cost - slippage_cost
+    pnl_pct = net_pnl / (pos["notional_usd"] + 1e-9)
+    return net_pnl, pnl_pct
 
 
 def log_trade(pos: dict, exit_price_a: float, exit_price_b: float) -> None:
