@@ -1,242 +1,204 @@
 # Phase 4 — Testnet Execution: A Study Guide
 
-*Companion notes for the stat-arb bot. Read alongside McElreath,* Statistical Rethinking, *2nd ed.*
-
-**Status: planning document, pre-build. Will be updated as we deploy.**
+*Companion notes for the stat-arb bot. Phase 4 is more engineering than statistics, but every design choice here protects the statistical edge built in Phases 1–3.*
 
 ---
 
 ## 0. The one-sentence summary
 
-Phase 1–3 built a bot that runs in **dry-run**: it computes signals, opens and closes positions on paper, and logs everything. Phase 4 wires the bot to Hyperliquid's **testnet** so it places real orders with fake money. Phase 5 flips it to **mainnet** with real capital.
-
-Dry-run → testnet → mainnet is a standard deployment pipeline in algo trading. Each step adds realism while keeping risk bounded.
+We built a **testnet executor** that places real orders on Hyperliquid's test network using an isolated API wallet, gated by hard-coded safeguards, so we can validate the entire trade pipeline with zero real-money risk before going live on mainnet.
 
 ---
 
-## 1. What "testnet" actually means here
+## 1. Why testnet exists
 
-Hyperliquid's testnet is a **complete replica of the mainnet exchange** running on separate infrastructure. Key properties:
+A dry-run bot tells you what *would* have happened. A testnet bot tells you what *actually* happens. These are different things.
 
-- **Real matching engine.** Orders are matched by the same code that runs on mainnet.
-- **Real order book.** Other traders place orders; you see real depth.
-- **Fake USDC.** Testnet USDC has no value. You can request it from a faucet.
-- **Real fills.** When your order crosses, it executes. Slippage is real.
-- **Same API.** The SDK works identically; only the base URL differs.
+**What testnet reveals that dry-run can't:**
 
-**What testnet does NOT replicate:**
-- Mainnet liquidity (testnet order books are thinner)
-- Real market impact (fake orders don't move markets)
-- Adversarial flow (testnet has fewer bots competing for the same edge)
-
-Testnet is the closest thing to live trading without risking capital.
-
----
-
-## 2. The Hyperliquid SDK
-
-We'll use `hyperliquid-python-sdk`. Key components:
-
-| Component | Purpose |
+| Hidden assumption in dry-run | What testnet uncovers |
 |---|---|
-| `Info` | Read-only queries: prices, positions, account state, order history |
-| `Exchange` | Order placement, cancellation, position management |
-| `API` | Low-level HTTP wrapper |
+| "Order fills at the reference price" | Real fills have slippage; testnet liquidity is thin |
+| "Order sizes are valid" | Hyperliquid rejects orders under ~$10 notional |
+| "API wallet signs correctly" | Signer vs account_address mismatch breaks everything |
+| "Account has funds" | Spot vs Perp clearinghouse confusion blocks trades |
+| "Order status parsing works" | Top-level `status: ok` doesn't mean the order filled |
 
-**Installation:**
-```bash
-pip install hyperliquid-python-sdk
-```
-
-**Basic usage:**
-```python
-from hyperliquid.exchange import Exchange
-from hyperliquid.info import Info
-from eth_account import Account
-
-# Load private key from env
-account = Account.from_key(os.environ["HL_PRIVATE_KEY"])
-
-# Initialize exchange (testnet)
-exchange = Exchange(
-    wallet=account,
-    base_url="https://api.hyperliquid-testnet.xyz",
-    account_address=account.address,
-)
-info = Info(base_url="https://api.hyperliquid-testnet.xyz", skip_ws=True)
-```
-
-**Order placement:**
-```python
-exchange.order(
-    coin="LINK",
-    is_buy=True,
-    sz=38.77,           # size in coin units
-    limit_px=11.35,     # limit price
-    order_type={"limit": {"tif": "Ioc"}},  # Immediate-Or-Cancel
-    reduce_only=False,
-)
-```
-
-`Ioc` (Immediate-Or-Cancel) means "fill what you can right now, cancel the rest." This is what we want for stat-arb entries — we don't want unfilled orders sitting on the book.
+**This is the McElreath Ch 2 "small world / large world" pattern applied to engineering.** Dry-run operates in the small world of the model — every assumption holds. Testnet forces you to confront the large world where assumptions break.
 
 ---
 
-## 3. Safe API key handling (McElreath would approve)
+## 2. The API wallet pattern
 
-The Hyperliquid API key signs every order. If leaked, an attacker can trade on your behalf but **cannot withdraw funds** — Hyperliquid separates trading and withdrawal permissions.
+Hyperliquid supports two credentials per account:
 
-**Best practices:**
-
-1. **Use an API key, not your wallet's main private key.** Hyperliquid lets you generate API wallets that can sign trades but not transfers.
-2. **Store in `.env` file, chmod 600.** Never commit to git.
-3. **Load via environment variable, never hardcode.**
-4. **Rotate quarterly.** Generate a new key, update `.env`, revoke the old one.
-
-**The `.env` file:**
-```bash
-HL_PRIVATE_KEY=0x...
-HL_ACCOUNT_ADDRESS=0x...
-HL_NETWORK=testnet
-```
-
-**The systemd service reads it via `EnvironmentFile=`:**
-```ini
-[Service]
-EnvironmentFile=/home/hlbot/hyperliquid-stat-arb-bot/.env
-```
-
----
-
-## 4. The safeguards (all four must be in place before testnet)
-
-### Safeguard 1: Hard cap on order size
-```python
-MAX_NOTIONAL_PER_ORDER = 50.0  # USD
-```
-Any order larger than this is refused before the SDK is called.
-
-### Safeguard 2: Total exposure cap
-```python
-MAX_TOTAL_EXPOSURE_USD = 100.0
-```
-Sum of all open positions can't exceed this. Checked before every open.
-
-### Safeguard 3: Daily order circuit breaker
-```python
-MAX_DAILY_ORDERS = 20
-```
-If the bot places more than 20 orders in a 24h window, it stops. Prevents runaway loops.
-
-### Safeguard 4: Kill switch
-```python
-KILL_SWITCH_FILE = "/home/hlbot/hyperliquid-stat-arb-bot/KILL"
-```
-If this file exists, the executor refuses to place any order. Create with `touch KILL`, delete with `rm KILL`.
-
-**The four together mean:** even if the model goes haywire, the most you can lose is bounded. This is the McElreath Ch 6 idea applied to operations — don't trust the model to be right; bound the consequences if it's wrong.
-
----
-
-## 5. The four-phase deployment
-
-### Phase 4.1 — Build (Sunday, Sep 27)
-- Install SDK
-- Implement `LiveExecutor.place_order()`
-- Add safeguards
-- Unit test with a mock
-- **Deliverable:** code ready to run
-
-### Phase 4.2 — Manual test (Monday, Sep 28)
-- Fund testnet wallet
-- Place one manual order via a script
-- Verify it fills
-- Inspect fill price vs expected
-- **Deliverable:** confirmation the SDK works end-to-end
-
-### Phase 4.3 — Automated testnet (Tuesday, Sep 29)
-- Flip `executor.mode: "testnet"` in config
-- Systemd cycles begin placing real testnet orders
-- Monitor for 3 days (Tue/Wed/Thu)
-- **Deliverable:** 3 days of testnet trade history
-
-### Phase 4.4 — Go/no-go (Friday morning, Oct 2)
-- Review testnet performance
-- If clean → flip to `mode: live` (mainnet) at 5% size
-- **Deliverable:** mainnet trading begins
-
----
-
-## 6. The go/no-go checklist
-
-Before flipping to mainnet, ALL seven must pass:
-
-| # | Check | Pass criteria |
+| Role | What it does | What goes in `.env` |
 |---|---|---|
-| 1 | Orders fill | 100% within 30 seconds |
-| 2 | Fill price accuracy | Within 0.1% of mid |
-| 3 | Partial fills handled | No crashes |
-| 4 | Position tracking | Bot JSON == exchange state |
-| 5 | Exits trigger | Target/stop rules fire on real fills |
-| 6 | No crashes | 48+ hours clean |
-| 7 | PnL within model | Testnet PnL within 20% of model |
+| **Main wallet** | Holds USDC, can withdraw | `HL_ACCOUNT_ADDRESS` (public) |
+| **API wallet (agent)** | Places orders on behalf of main | `HL_PRIVATE_KEY` (secret) |
 
-**If any fail:** fix, restart the clock. No exceptions.
+**The API wallet cannot withdraw funds.** Even if the VPS is fully compromised and the API wallet's private key leaks, the attacker can only place orders — not move USDC out.
+
+**This is the single most important security decision in the whole bot.** Never put your main wallet's private key on a VPS. Ever.
+
+### How the SDK uses them
+
+```python
+account = Account.from_key(api_wallet_private_key)   # signs orders
+exchange = Exchange(account, base_url,
+                    account_address=main_wallet_address)  # target account
+```
+
+The `Exchange` client needs both:
+- The **API wallet's private key** for signing (proof the request came from an authorized agent)
+- The **main wallet's address** for targeting (which account's positions to modify)
 
 ---
 
-## 7. What could go wrong (and what we'll do)
+## 3. Account modes: Unified vs Manual
 
-| Failure | Symptom | Response |
+Hyperliquid has three account abstraction modes. Which one you're in determines *where* your USDC lives, and therefore *how* the SDK reads your balance.
+
+| Mode | Spot + Perp balance | SDK reads | Recommended? |
+|---|---|---|---|
+| **Unified** | Shared collateral | `user_state()` returns **$0** (perp side empty) | ❌ for us |
+| **Portfolio Margin** | Cross-margin, requires >$25M | N/A | ❌ not eligible |
+| **Manual** | Separate balances per DEX | `user_state()` returns **Perp balance** | ✅ **this is what we use** |
+
+**The symptom:** the UI shows $999, but `info.user_state()` returns `accountValue: 0`.
+
+**The fix:** switch account mode to Manual. In Manual mode, USDC moves to the Perp clearinghouse, where the SDK naturally reads it.
+
+---
+
+## 4. Spot vs Perp balances
+
+Even in Manual mode, USDC can sit in one of two places:
+
+| Balance | Purpose | Who reads it |
 |---|---|---|
-| API key invalid | SDK raises `AuthError` | Fix `.env`, restart |
-| Insufficient balance | Order rejected | Reduce size or fund wallet |
-| Order never fills | Position stays 0 | Increase slippage tolerance |
-| Partial fill | Bot thinks it has full position | Reconcile with `Info.user_state()` |
-| Network timeout | Cycle crashes | Systemd restarts next cycle |
-| Model outputs NaN | Order refused | Safeguard catches it |
-| Wrong direction | Bot goes long when it should short | Reconcile and investigate |
+| **Spot** | Direct token holding | `info.spot_user_state()` |
+| **Perp** | Collateral for futures | `info.user_state()` |
 
-**Every failure gets logged.** Every fix gets documented in this file.
+**The bot trades perps.** So it needs the balance in Perp, not Spot.
 
----
+**The faucet deposits to Spot.** This is why the first diagnostic showed $0 even after claiming USDC — the money was in Spot, the SDK was reading Perp.
 
-## 8. The lessons from Phase 3 that apply here
-
-From our week of dry-run:
-
-1. **The model is calibrated.** P=0.9 trades closed at target 4/4 times in the cleanest cases.
-2. **β-drift exit was overfiring.** Fixed with posterior-aware logic. Zero false exits since.
-3. **SEI/SUI was a false positive.** Strong ΔWAIC but 3 losses in a row. Drop from universe.
-4. **Small sample size matters.** 11 trades is not enough to trust. 20+ is better.
-
-**Translation for Phase 4:**
-- Trust the signals, but **watch the first 5 trades closely**
-- **Reconcile every fill** against the model's expectation
-- If actual PnL diverges from model PnL by >20%, pause and diagnose
+**The fix:** one-time "Transfer to Perps" from the Hyperliquid UI, or call `exchange.usdc_transfer()` programmatically.
 
 ---
 
-## 9. What "success" looks like
+## 5. Order status parsing (the trap)
 
-**By Friday Oct 2 morning:**
-- 3 days of testnet history
-- ~15–20 testnet trades closed
-- Win rate >60%
-- Positive testnet PnL
-- Zero infrastructure failures
-- Fill slippage <0.2% on average
+This is the subtlest bug in Phase 4, and it nearly cost us hours.
 
-**If all true:** flip to mainnet with confidence.
+The Hyperliquid SDK returns a **nested response** for every order:
 
-**If not:** extend testnet, diagnose, iterate. No shame in waiting.
+```json
+{
+  "status": "ok",                        ← top-level: request accepted
+  "response": {
+    "data": {
+      "statuses": [
+        {"error": "Order must be at least $10"}  ← actual outcome
+      ]
+    }
+  }
+}
+```
+
+**`status: "ok"` means "the exchange received your request."** It does **not** mean the order filled. A `$5` order will return `status: "ok"` but include `{"error": "..."}` inside. A naive parser (like ours initially was) reports a false fill.
+
+**The correct parse:**
+
+```python
+if statuses[0].get("error"):
+    → rejected
+elif statuses[0].get("filled"):
+    → market fill, capture oid
+elif statuses[0].get("resting"):
+    → limit order placed, capture oid
+```
+
+**Why this matters:** if we'd trusted the top-level status, the bot would have logged phantom fills and thought it had open positions that didn't exist. Silent corruption of the state file. Exactly the kind of bug that "works" in a demo and blows up live.
+
+---
+
+## 6. Minimum order sizes and slippage
+
+Two exchange-level constraints that dry-run can't reveal:
+
+**Minimum notional: $10.** Orders under $10 USDC value get rejected. Our first smoke test used $5 — silently failed.
+
+**Slippage tolerance.** When placing a market order, you specify a slippage parameter. Hyperliquid computes a limit price at `ref_price × (1 ± slippage)` and only fills against resting orders within that band. On testnet, liquidity is thin; a 1% slippage band may not reach any sellers.
+
+**We use 3% on testnet.** Configurable via `config/phase3.yaml`:
+```yaml
+executor:
+  slippage_tolerance: 0.03
+```
+
+On mainnet, 1% is usually enough. Testnet needs more.
+
+---
+
+## 7. Safeguards (the safety net)
+
+Before any live order reaches the exchange, it passes through `Safeguards.check_order()`:
+
+| Check | Threshold | What it prevents |
+|---|---|---|
+| **Kill switch** | `KILL` file exists → refuse all | Emergency stop |
+| **Per-order notional** | ≤ $50 | A miscomputed size from wiping the account |
+| **Total exposure** | ≤ $100 | Stacking many small positions |
+| **Daily order count** | ≤ 20 | Runaway loops firing hundreds of orders |
+
+**These are hard gates, not soft warnings.** If any fails, the order is rejected before hitting the network. The daily counter persists to `state/daily_orders.json` so it survives bot restarts.
+
+**The KILL switch** is a plain file check. `touch KILL` in the project root and every subsequent order is refused. `rm KILL` to resume. No restart needed.
+
+---
+
+## 8. The dry-run → testnet → mainnet pipeline
+
+Each stage adds realism at the cost of complexity:
+
+| Stage | Real orders? | Real money? | Purpose |
+|---|---|---|---|
+| **Dry-run** | No | No | Strategy validation |
+| **Testnet** | Yes | No (mock USDC) | Execution validation |
+| **Mainnet (small)** | Yes | Yes ($10–50) | First live trial |
+| **Mainnet (full)** | Yes | Yes (100%) | Production |
+
+**Never skip a stage.** Each one catches a distinct class of bugs:
+- Dry-run catches logic bugs (wrong β, wrong exits)
+- Testnet catches execution bugs (signing, order format, funds location)
+- Small mainnet catches real-market bugs (real slippage, real liquidity)
+- Full mainnet is only reached after all three prove themselves
+
+---
+
+## 9. The mainnet safety checklist
+
+Before the bot ever touches mainnet:
+
+- [ ] Config `network: "testnet"` verified in every file
+- [ ] API wallet approved on **testnet only**, not mainnet
+- [ ] `.env` permissions are `600`, owned by `hlbot`, gitignored
+- [ ] Safeguards validated (oversized order → rejected)
+- [ ] Kill switch tested (`touch KILL` → next order rejected)
+- [ ] Testnet has run for 5+ days without incident
+- [ ] Testnet fills match dry-run predictions within slippage tolerance
+- [ ] Small mainnet test planned ($10–20 first order, not $50)
+
+**If any box is unchecked, do not proceed.** Real money has real consequences.
 
 ---
 
 ## 10. If you remember only five things
 
-1. **Testnet is the real exchange with fake money.** Use it to validate execution, not just the model.
-2. **API keys can trade but not withdraw.** Hyperliquid separates these. Still store carefully.
-3. **Four safeguards bound your risk.** Size cap, exposure cap, order cap, kill switch.
-4. **One phase at a time.** Don't flip to mainnet until the testnet checklist passes.
-5. **Actual PnL vs model PnL is the ultimate truth.** If they diverge, the model or execution is wrong.
+1. **API wallets can trade but not withdraw.** Use them on any VPS. Never deploy a main wallet key.
+2. **`status: ok` in the SDK response is not a fill.** Parse the nested `statuses` array for `filled` / `resting` / `error`.
+3. **Spot and Perp are separate balance sheets.** The bot trades perps; USDC must be in Perp.
+4. **Minimum $10 order size on Hyperliquid.** Small test orders will silently fail.
+5. **Three-stage pipeline: dry → testnet → small mainnet.** Skipping stages is how real money dies.
