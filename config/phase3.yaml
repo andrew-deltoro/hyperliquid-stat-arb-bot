@@ -52,5 +52,12 @@ executor:
   mode: "dry_run"           # change to "live" only after 2+ weeks of dry-run
   # Live-only settings (ignored in dry_run):
   private_key_env: "HL_PRIVATE_KEY"
+  account_address_env: "HL_ACCOUNT_ADDRESS"
   network: "testnet"         # "testnet" or "mainnet"
   account_address: ""        # your wallet address (mainnet only)
+
+#safeguards
+safeguards:
+  max_notational_per_order: 50.0
+  max_total_exposure_usd: 100.0
+  max_daily_orders: 20
