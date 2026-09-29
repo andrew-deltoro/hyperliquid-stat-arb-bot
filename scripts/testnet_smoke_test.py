@@ -12,9 +12,14 @@ from src.hyperliquid_bot.phase3.executor import LiveExecutor, Order
 
 
 def main():
-    cfg = load_config()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="config/phase3-testnet.yaml")
+    args = parser.parse_args()
+
+    cfg = load_config(args.config)
     if cfg.raw.get("executor", {}).get("mode") != "live":
-        print("ERROR: set executor.mode='live' in config/phase3.yaml first")
+        print(f"ERROR: {args.config} has mode != live")
         return
 
     print("=== LiveExecutor smoke test ===")
