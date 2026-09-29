@@ -32,3 +32,8 @@ STATE_DIR = RUNTIME_DIR / "state"
 REPORTS_DIR = RUNTIME_DIR / "reports"
 LOGS_DIR = RUNTIME_DIR / "logs"
 KILL_SWITCH_PATH = RUNTIME_DIR / "KILL"
+
+# Ensure runtime dirs exist (defensive: some service managers
+# don't create parent dirs before opening log files)
+for _d in (RUNTIME_DIR, STATE_DIR, REPORTS_DIR, LOGS_DIR):
+    _d.mkdir(parents=True, exist_ok=True)
