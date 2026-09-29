@@ -168,6 +168,28 @@ class LiveExecutor(BaseExecutor):
             self.log_fn(f"[LIVE-EXECUTOR] could not fetch account state: {e}")
 
     def _current_total_notional(self) -> float:
+        """
+        Total notional exposure across ALL open positions on the account,
+        queried live from the exchange. Falls back to state file if the
+        API call fails.
+        """
+        # Try live query first
+        try:
+            state = self.info.user_state(self.wallet_address)
+            total = 0.0
+            for p in state.get("assetPositions", []):
+                pos = p.get("position", {})
+                szi = float(pos.get("szi", 0))
+                val = abs(float(pos.get("positionValue", 0)))
+                if szi != 0 and val > 0:
+                    total += val
+            if total > 0:
+                return total
+            return 0.0
+        except Exception as e:
+            self.log_fn(f"[LIVE-EXECUTOR] live exposure check failed: {e}")
+
+        # Fallback to state file
         import json
         state_path = STATE_DIR / "positions.json"
         if not state_path.exists():
@@ -179,6 +201,7 @@ class LiveExecutor(BaseExecutor):
             for p in data.get("positions", [])
             if p.get("status") == "open"
         )
+
 
     def place_order(self, order: Order, ref_price: float) -> Fill:
         # --- Safeguards ---
