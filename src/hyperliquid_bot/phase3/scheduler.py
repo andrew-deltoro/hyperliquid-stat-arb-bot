@@ -9,6 +9,8 @@ from .signals import generate_signal
 from .positions import PositionManager
 from .executor import build_executor
 from . import journal
+from .scaler import PositionScaler
+
 
 
 def _log(msg: str, fh=None):
@@ -16,6 +18,11 @@ def _log(msg: str, fh=None):
     if fh is not None:
         fh.write(msg + "\n")
         fh.flush()
+
+def _log_to_fh(fh):
+    def _fn(msg):
+        _log(msg, fh)
+    return _fn
 
 
 def run_cycle(config_path=None, log_path=None):
@@ -31,6 +38,30 @@ def run_cycle(config_path=None, log_path=None):
     with open(log_path, "w") as fh:
         _log(f"=== Cycle start: {log_path.name} ===", fh)
         _log(f"Pairs: {cfg.pairs}", fh)
+
+        # Compounding: scale position sizes by current balance
+        scaler = PositionScaler(cfg, log_fn=_log_to_fh(fh))
+        scale_result = scaler.refresh()
+
+        # Scale safeguards only when balance GROWS (scale > 1).
+        # When balance shrinks, notional is already scaled down;
+        # we don't need to tighten the safeguard further.
+        if scale_result.enabled and cfg.position.get("scale_safeguards", True):
+            sg = cfg.raw.get("safeguards", {})
+            safeguard_scale = max(1.0, scale_result.scale)
+            sg["max_notional_per_order"] = (
+                sg.get("max_notional_per_order", 100.0) * safeguard_scale
+            )
+            sg["max_total_exposure_usd"] = (
+                sg.get("max_total_exposure_usd", 500.0) * safeguard_scale
+            )
+            _log(
+                f"[SCALER] safeguard_scale={safeguard_scale:.3f} → "
+                f"${sg['max_notional_per_order']:.2f}/order, "
+                f"${sg['max_total_exposure_usd']:.2f} exposure",
+                fh,
+            )
+
 
         executor = build_executor(cfg, log_fn=print)
 
@@ -57,6 +88,7 @@ def run_cycle(config_path=None, log_path=None):
                     a, b, cfg,
                     kappa_prior_pop=kp,
                     kappa_prior_pop_sd=kp_sd,
+                    scaler=scaler,
                 )
             except Exception as e:
                 _log(f"[{pair}] FAILED: {type(e).__name__}: {e}", fh)

@@ -45,16 +45,17 @@ class Signal:
     direction: str               # "LONG_A_SHORT_B" / "SHORT_A_LONG_B"
     action: str                  # "OPEN" / "SKIP"
 
-
 def generate_signal(
     coin_a: str,
     coin_b: str,
     cfg,
     kappa_prior_pop: Optional[float] = None,
     kappa_prior_pop_sd: Optional[float] = None,
+    scaler=None,
 ) -> Signal:
     """Fetch data, fit coint + OU, produce a Signal."""
     pair = f"{coin_a}/{coin_b}"
+
 
     ts, close_a, close_b = aligned_close_prices(
         coin_a, coin_b,
@@ -113,6 +114,11 @@ def generate_signal(
         nu=ou.nu_mean,
         base_notional=cfg.position["base_notional"],
     )
+
+
+    # Apply compounding scale
+    if scaler is not None:
+        notional = scaler.scale_notional(notional)
 
     # Entry decision
     enough_z = abs(z) >= cfg.signal["z_entry_min"]

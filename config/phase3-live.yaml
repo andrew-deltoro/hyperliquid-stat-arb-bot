@@ -24,11 +24,16 @@ signal:
   edge_min: 0.05
 
 position:
-  base_notional: 2700.0            # produces ~$200 positions → ~$100 per leg
+  base_notional: 2700.0
+  baseline_balance: 5000.0          # anchor for scale=1.0
+  compounding_enabled: true
+  scale_safeguards: true
   target_frac: 0.5
   exit_horizon_mult: 2.0
   stop_mult: 3.0
   beta_shift_max: 0.20
+
+
 
 risk:
   max_concurrent_positions: 3
