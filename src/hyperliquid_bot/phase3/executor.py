@@ -378,10 +378,14 @@ class LiveExecutor(BaseExecutor):
         for _ in range(polls):
             time.sleep(poll_interval)
             try:
-                status = self.info.order_status(self.wallet_address, int(oid))
-                if isinstance(status, dict):
-                    order_info = status.get("order", {})
-                    if order_info.get("status") == "filled":
+                order_info = self.info.query_order_by_oid(
+                    self.wallet_address, int(oid),
+                )
+                if isinstance(order_info, dict):
+                    # SDK returns either {"order": {...}} or the order dict directly
+                    inner = order_info.get("order", order_info)
+                    status = inner.get("status", "")
+                    if status == "filled":
                         self.log_fn(
                             f"[LIVE-EXECUTOR] MAKER FILLED "
                             f"{order.side.upper()} {rounded_size:.6f} "
@@ -396,9 +400,15 @@ class LiveExecutor(BaseExecutor):
                             simulated=False,
                             status="filled", order_id=oid, error="",
                         )
+                    elif status in ("canceled", "rejected"):
+                        self.log_fn(
+                            f"[LIVE-EXECUTOR] maker order {status}: oid={oid}"
+                        )
+                        return None
             except Exception as e:
                 self.log_fn(f"[LIVE-EXECUTOR] status check error: {e}")
                 break
+
 
         # Timeout: cancel and return None
         try:
