@@ -51,6 +51,9 @@ executor:
   account_address_env: "HL_ACCOUNT_ADDRESS"
   network: "testnet"
   slippage_tolerance: 0.03
+  prefer_maker: true
+  maker_timeout_sec: 30
+
 
 #safeguards
 safeguards:

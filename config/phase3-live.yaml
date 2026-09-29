@@ -24,27 +24,30 @@ signal:
   edge_min: 0.05
 
 position:
-  base_notional: 1000.0
+  base_notional: 2700.0            # produces ~$200 positions → ~$100 per leg
   target_frac: 0.5
   exit_horizon_mult: 2.0
   stop_mult: 3.0
   beta_shift_max: 0.20
 
 risk:
-  max_concurrent_positions: 2       # start small
-  max_total_notional: 50.0          # $50 total exposure on day 1
+  max_concurrent_positions: 3
+  max_total_notional: 500.0        # 10% of $5k account
 
 executor:
   mode: "live"
-  private_key_env: "HL_PRIVATE_KEY"
-  account_address_env: "HL_ACCOUNT_ADDRESS"
+  private_key_env: "HL_PRIVATE_KEY_MAINNET"
+  account_address_env: "HL_ACCOUNT_ADDRESS_MAINNET"
   network: "mainnet"
   slippage_tolerance: 0.01          # 1% tighter than testnet
+  prefer_maker: true              # try post-only limit first
+  maker_timeout_sec: 30           # wait this long before falling back to market
+
 
 safeguards:
-  max_notional_per_order: 10.0      # $10 per order on day 1
-  max_total_exposure_usd: 50.0      # $50 total on day 1
-  max_daily_orders: 6               # 6 orders/day cap
+  max_notional_per_order: 100.0    # $100 per leg hard cap
+  max_total_exposure_usd: 500.0    # ~2-3 concurrent positions
+  max_daily_orders: 10
 
 fees:
   taker_fee_pct: 0.00045

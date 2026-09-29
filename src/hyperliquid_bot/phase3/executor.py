@@ -7,6 +7,7 @@ The API wallet's private key signs; the main wallet is the account_address.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -194,6 +195,223 @@ class LiveExecutor(BaseExecutor):
                 timestamp_iso=datetime.now(timezone.utc).isoformat(),
                 simulated=False, status="rejected", error=check.reason,
             )
+
+        # --- Round size to exchange precision ---
+        try:
+            meta = self.info.meta()
+            sz_decimals = None
+            for asset in meta.get("universe", []):
+                if asset.get("name") == order.coin:
+                    sz_decimals = int(asset.get("szDecimals", 0))
+                    break
+            if sz_decimals is None:
+                sz_decimals = 2
+            rounded_size = round(order.size, sz_decimals)
+            if rounded_size <= 0:
+                raise ValueError(
+                    f"rounded size {rounded_size} is zero for {order.coin}"
+                )
+        except Exception as e:
+            self.log_fn(f"[LIVE-EXECUTOR] ERROR sizing {order.coin}: {e}")
+            return Fill(
+                coin=order.coin, side=order.side, size=order.size,
+                price=ref_price, notional_usd=order.notional_usd,
+                tag=order.tag,
+                timestamp_iso=datetime.now(timezone.utc).isoformat(),
+                simulated=False, status="error", error=str(e),
+            )
+
+        # --- Try maker order first (if enabled) ---
+        ex_cfg = self.cfg.raw.get("executor", {})
+        prefer_maker = bool(ex_cfg.get("prefer_maker", False))
+        maker_timeout = int(ex_cfg.get("maker_timeout_sec", 30))
+
+        if prefer_maker:
+            maker_fill = self._try_maker(order, rounded_size, maker_timeout)
+            if maker_fill is not None:
+                self.safeguards.increment_daily_order_count()
+                return maker_fill
+
+        # --- Fall back to market order ---
+        is_buy = order.side == "buy"
+        try:
+            slippage = float(ex_cfg.get("slippage_tolerance", 0.03))
+            result = self.exchange.market_open(
+                order.coin, is_buy, rounded_size, ref_price, slippage,
+            )
+        except Exception as e:
+            self.log_fn(f"[LIVE-EXECUTOR] ERROR placing {order.tag}: {e}")
+            return Fill(
+                coin=order.coin, side=order.side, size=rounded_size,
+                price=ref_price, notional_usd=order.notional_usd,
+                tag=order.tag,
+                timestamp_iso=datetime.now(timezone.utc).isoformat(),
+                simulated=False, status="error", error=str(e),
+            )
+
+        # --- Parse result ---
+        order_status = "error"
+        oid = ""
+        error_msg = ""
+
+        if isinstance(result, dict):
+            top = result.get("status", "unknown")
+            if top != "ok":
+                error_msg = f"top-level status={top}"
+            else:
+                statuses = (
+                    result.get("response", {})
+                    .get("data", {})
+                    .get("statuses", [])
+                )
+                if not statuses:
+                    error_msg = "no statuses in response"
+                else:
+                    first = statuses[0]
+                    if isinstance(first, dict):
+                        if "error" in first:
+                            error_msg = str(first["error"])
+                        elif "filled" in first:
+                            order_status = "filled"
+                            oid = str(first["filled"].get("oid", ""))
+                        elif "resting" in first:
+                            order_status = "filled"
+                            oid = str(first["resting"].get("oid", ""))
+                        else:
+                            error_msg = f"unknown status: {first}"
+                    else:
+                        error_msg = f"non-dict status: {first}"
+
+        fill = Fill(
+            coin=order.coin, side=order.side, size=rounded_size,
+            price=ref_price, notional_usd=order.notional_usd,
+            tag=order.tag,
+            timestamp_iso=datetime.now(timezone.utc).isoformat(),
+            simulated=False,
+            status=order_status,
+            order_id=oid,
+            error=error_msg,
+        )
+
+        if fill.status == "filled":
+            self.safeguards.increment_daily_order_count()
+            self.log_fn(
+                f"[LIVE-EXECUTOR] TAKER {fill.side.upper():4s} "
+                f"{fill.size:.6f} {fill.coin:6s} @ {fill.price:.6f}  "
+                f"oid={fill.order_id}  tag={fill.tag}"
+            )
+        else:
+            self.log_fn(
+                f"[LIVE-EXECUTOR] FAIL {fill.side.upper():4s} "
+                f"{fill.size:.6f} {fill.coin:6s}  "
+                f"ERROR: {fill.error}  tag={fill.tag}"
+            )
+        return fill
+
+    # ---------------- maker order helper ----------------
+    def _try_maker(self, order: Order, rounded_size: float,
+                   timeout_sec: int) -> Fill | None:
+        """
+        Try to place a post-only limit order at the best bid/ask.
+        Returns a Fill if successful, None if we should fall back to taker.
+        """
+        is_buy = order.side == "buy"
+        try:
+            book = self.info.l2_snapshot(order.coin)
+            bids = book["levels"][0]
+            asks = book["levels"][1]
+            if not bids or not asks:
+                self.log_fn(
+                    f"[LIVE-EXECUTOR] maker skip: empty book for {order.coin}"
+                )
+                return None
+            best_bid = float(bids[0]["px"])
+            best_ask = float(asks[0]["px"])
+
+            # Post-only at best bid (buy) or best ask (sell)
+            maker_px = best_bid if is_buy else best_ask
+            self.log_fn(
+                f"[LIVE-EXECUTOR] maker attempt: {order.side.upper()} "
+                f"{rounded_size:.6f} {order.coin} @ {maker_px:.6f} "
+                f"(bid={best_bid:.4f} ask={best_ask:.4f})"
+            )
+
+            maker_result = self.exchange.order(
+                name=order.coin,
+                is_buy=is_buy,
+                sz=rounded_size,
+                limit_px=maker_px,
+                order_type={"limit": {"tif": "Alo"}},
+            )
+        except Exception as e:
+            self.log_fn(f"[LIVE-EXECUTOR] maker error: {e}")
+            return None
+
+        # Extract OID
+        oid = ""
+        if isinstance(maker_result, dict):
+            statuses = (
+                maker_result.get("response", {})
+                .get("data", {})
+                .get("statuses", [])
+            )
+            if statuses and isinstance(statuses[0], dict):
+                first = statuses[0]
+                if "resting" in first:
+                    oid = str(first["resting"].get("oid", ""))
+                elif "filled" in first:
+                    # Filled immediately (rare for post-only but possible)
+                    oid = str(first["filled"].get("oid", ""))
+                elif "error" in first:
+                    self.log_fn(
+                        f"[LIVE-EXECUTOR] maker rejected: {first['error']}"
+                    )
+                    return None
+
+        if not oid:
+            self.log_fn("[LIVE-EXECUTOR] maker no OID returned")
+            return None
+
+        # Wait for fill
+        poll_interval = 5
+        polls = max(1, timeout_sec // poll_interval)
+        for _ in range(polls):
+            time.sleep(poll_interval)
+            try:
+                status = self.info.order_status(self.wallet_address, int(oid))
+                if isinstance(status, dict):
+                    order_info = status.get("order", {})
+                    if order_info.get("status") == "filled":
+                        self.log_fn(
+                            f"[LIVE-EXECUTOR] MAKER FILLED "
+                            f"{order.side.upper()} {rounded_size:.6f} "
+                            f"{order.coin} @ {maker_px:.6f} oid={oid}"
+                        )
+                        return Fill(
+                            coin=order.coin, side=order.side,
+                            size=rounded_size, price=maker_px,
+                            notional_usd=order.notional_usd,
+                            tag=order.tag,
+                            timestamp_iso=datetime.now(timezone.utc).isoformat(),
+                            simulated=False,
+                            status="filled", order_id=oid, error="",
+                        )
+            except Exception as e:
+                self.log_fn(f"[LIVE-EXECUTOR] status check error: {e}")
+                break
+
+        # Timeout: cancel and return None
+        try:
+            self.exchange.cancel(order.coin, int(oid))
+            self.log_fn(
+                f"[LIVE-EXECUTOR] maker timeout ({timeout_sec}s), "
+                f"cancelled oid={oid}"
+            )
+        except Exception as e:
+            self.log_fn(f"[LIVE-EXECUTOR] cancel error: {e}")
+
+        return None
+
 
         # --- Place order ---
         is_buy = order.side == "buy"

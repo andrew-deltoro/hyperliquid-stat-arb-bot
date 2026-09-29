@@ -1,0 +1,69 @@
+# Phase 3 scheduler configuration
+
+# Pairs to monitor. Each entry is [coin_a, coin_b].
+# Sourced from reports/scan_*.csv top scorers.
+pairs:
+  - ["LINK", "PYTH"]
+  - ["SEI", "SUI"]
+  - ["UNI", "SUSHI"]
+  - ["ETH", "BTC"]
+  - ["SOL", "AVAX"]
+  - ["APT", "SUI"]
+  - ["AAVE", "COMP"]
+  - ["ARB", "OP"]
+  - ["INJ", "TIA"]
+
+data:
+  interval: "1h"
+  lookback_hours: 480      # 30 days
+
+model:
+  coint_draws: 500
+  coint_tune: 500
+  ou_draws: 500
+  ou_tune: 500
+  chains: 4
+
+# Entry thresholds
+signal:
+  z_entry_min: 1.5         # |z| must exceed this to fire a signal
+  edge_min: 0.05           # P(revert) - 0.5 must exceed this
+
+# Position construction & exit
+position:
+  base_notional: 1000.0    # reference size (before discounts)
+  target_frac: 0.5         # exit when spread returns to 50% of entry deviation
+  exit_horizon_mult: 2.0   # exit at 2x half-life
+  stop_mult: 3.0           # exit if spread widens to 3x entry deviation
+  beta_shift_max: 0.10     # exit if |Δβ/β| > 10% vs entry
+
+# Portfolio-level risk limits
+risk:
+  max_concurrent_positions: 5
+  max_total_notional: 500.0
+
+# Population prior on kappa (from multilevel OU fit, see test_multilevel_ou.py)
+ou_prior:
+  kappa_pop: 0.0115
+  kappa_pop_sd: 0.0040
+
+# Executor mode: "dry_run" logs what would happen; "live" places real orders
+executor:
+  mode: "dry_run"           # change to "live" only after 2+ weeks of dry-run
+  # Live-only settings (ignored in dry_run):
+  private_key_env: "HL_PRIVATE_KEY"
+  account_address_env: "HL_ACCOUNT_ADDRESS"
+  network: "testnet"         # "testnet" or "mainnet"
+  account_address: ""        # your wallet address (mainnet only)
+
+#safeguards
+safeguards:
+  max_notational_per_order: 50.0
+  max_total_exposure_usd: 100.0
+  max_daily_orders: 20
+
+fees:
+  taker_fee_pct: 0.00045       # 0.045% per side (Hyperliquid taker)
+  maker_fee_pct: 0.00015       # 0.015% per side (Hyperliquid maker)
+  default_fee_pct: 0.00045     # assume taker (market orders)
+  slippage_bps: 3              # 3 basis points = 0.03% adverse per side
