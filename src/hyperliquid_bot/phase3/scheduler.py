@@ -70,6 +70,32 @@ def run_cycle(config_path=None, log_path=None):
 
         pm = PositionManager(cfg, executor=executor, log_fn=_dual_log)
 
+        # Reconcile state with exchange reality: close state entries for
+        # positions that no longer exist on the exchange.
+        if executor is not None and hasattr(executor, "info"):
+            try:
+                live_state = executor.info.user_state(executor.wallet_address)
+                live_coins = {
+                    p["position"]["coin"]
+                    for p in live_state.get("assetPositions", [])
+                    if float(p["position"].get("szi", 0)) != 0
+                }
+                removed = []
+                for pos in pm.state.positions:
+                    if pos["status"] != "open":
+                        continue
+                    if pos["coin_a"] not in live_coins and pos["coin_b"] not in live_coins:
+                        pos["status"] = "closed"
+                        pos["exit_reason"] = "state_reconciled"
+                        removed.append(pos["pair"])
+                if removed:
+                    from .state import save_state
+                    save_state(pm.state)
+                    _log(f"[RECONCILE] Removed stale: {removed}", fh)
+            except Exception as e:
+                _log(f"[RECONCILE] skipped: {e}", fh)
+
+
         _log(f"Open positions before cycle: {pm.open_count()}", fh)
 
         kp = cfg.ou_prior["kappa_pop"]
