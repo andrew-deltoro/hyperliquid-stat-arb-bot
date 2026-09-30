@@ -11,12 +11,12 @@ data:
   lookback_hours: 720
 
 model:
-  coint_draws: 500
-  coint_tune: 500
-  ou_draws: 500
-  ou_tune: 500
-  chains: 2
-  cores: 2
+  coint_draws: 2000
+  coint_tune: 2000
+  ou_draws: 2000
+  ou_tune: 2000
+  chains: 4
+  cores: 4
 
 signal:
   z_entry_min: 1.5
@@ -55,8 +55,8 @@ executor:
 
 
 safeguards:
-  max_notional_per_order: 100.0    # $100 per leg hard cap
-  max_total_exposure_usd: 500.0    # ~2-3 concurrent positions
+  max_notional_per_order: 25.0    # 5 per leg hard cap (tiny live trial)
+  max_total_exposure_usd: 100.0  # 00 total (4 pairs × $25)
   max_daily_orders: 10
 
 fees:

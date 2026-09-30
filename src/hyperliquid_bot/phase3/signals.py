@@ -15,6 +15,49 @@ from ..stats.mean_reversion import (
     position_size,
 )
 
+def _ensemble_z(log_a, log_b, lookbacks_hours):
+    """Fit cointegration at multiple lookbacks, average z-scores equally.
+    Equal weights (not AIC) because AIC is not comparable across sample sizes.
+    Returns (z_ensemble, alpha_avg, beta_avg, spread_series) or None.
+    """
+    from ..stats.cointegration import fit_cointegration
+    fits = []
+    for lb in lookbacks_hours:
+        if lb >= len(log_a):
+            continue
+        la = log_a[-lb:]
+        lb_ = log_b[-lb:]
+        try:
+            coint = fit_cointegration(
+                la, lb_, draws=500, tune=500, chains=2, cores=2,
+                progressbar=False,
+            )
+        except Exception:
+            continue
+        spread = la - coint.alpha_mean - coint.beta_mean * lb_
+        spread_c = spread - spread.mean()
+        z = float(spread_c[-1] / (spread_c.std() + 1e-9))
+        fits.append({
+            "z": z,
+            "alpha": coint.alpha_mean,
+            "beta": coint.beta_mean,
+        })
+    if not fits:
+        return None
+    z_ens = float(sum(f["z"] for f in fits) / len(fits))
+    alpha_avg = float(sum(f["alpha"] for f in fits) / len(fits))
+    beta_avg = float(sum(f["beta"] for f in fits) / len(fits))
+    spread_final = log_a[-24*30:] - alpha_avg - beta_avg * log_b[-24*30:]
+    spread_final = spread_final - spread_final.mean()
+    return {
+        "z": z_ens,
+        "alpha": alpha_avg,
+        "beta": beta_avg,
+        "spread": spread_final,
+        "n_lookbacks": len(fits),
+    }
+
+
 
 @dataclass
 class Signal:
@@ -72,6 +115,7 @@ def generate_signal(
         draws=cfg.model["coint_draws"],
         tune=cfg.model["coint_tune"],
         chains=cfg.model["chains"],
+        cores=cfg.model.get("cores", 1),
         progressbar=False,
     )
 
@@ -86,6 +130,7 @@ def generate_signal(
         draws=cfg.model["ou_draws"],
         tune=cfg.model["ou_tune"],
         chains=cfg.model["chains"],
+        cores=cfg.model.get("cores", 1),
         progressbar=False,
         kappa_prior_pop=kappa_prior_pop,
         kappa_prior_pop_sd=kappa_prior_pop_sd,

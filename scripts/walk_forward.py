@@ -55,19 +55,19 @@ else:
 
 
 INTERVAL = "1h"
-LOOKBACK_HOURS = 24 * 120     # 120 days of raw data
+LOOKBACK_HOURS = 24 * 200     # 200 days (API hard cap ~5000 bars)
 FIT_WINDOW_HOURS = 24 * 30    # 30-day fit window
-TEST_WINDOW_HOURS = 24 * 90   # test last 90 days
-HOLD_HORIZON_HOURS = 24 * 3   # 72h hold max
+TEST_WINDOW_HOURS = 24 * 165  # test last 165 days (fits under 5000-bar cap)
+HOLD_HORIZON_HOURS = int(os.getenv("HOLD_HORIZON_HOURS", str(24 * 3)))
 
 # Entry rules (same as live)
-Z_ENTRY_MIN = 1.5
-EDGE_MIN = 0.05
+Z_ENTRY_MIN = float(os.getenv("Z_ENTRY_MIN", "1.5"))
+EDGE_MIN = float(os.getenv("EDGE_MIN", "0.05"))
 
 # Exit rules (same as live)
-TARGET_FRAC = 0.5
-STOP_MULT = 3.0
-BETA_SHIFT_MAX = 0.20
+TARGET_FRAC = float(os.getenv("TARGET_FRAC", "0.5"))
+STOP_MULT = float(os.getenv("STOP_MULT", "3.0"))
+BETA_SHIFT_MAX = float(os.getenv("BETA_SHIFT_MAX", "0.20"))
 
 
 # ============================================================
@@ -279,6 +279,24 @@ def _pnl_pct(spread_delta, is_long_a, coint):
     return float(sign * spread_delta * 100)  # convert to %
 
 
+
+def bootstrap_sharpe(pnls, n_boot=10000, seed=42):
+    """Bootstrap 95% CI for per-trade Sharpe. Returns (lo, med, hi) or None."""
+    import numpy as _np
+    pnls = _np.asarray(pnls, dtype=float)
+    n = len(pnls)
+    if n < 3:
+        return None
+    rng = _np.random.default_rng(seed)
+    boot = _np.empty(n_boot)
+    for i in range(n_boot):
+        sample = rng.choice(pnls, size=n, replace=True)
+        sd = sample.std()
+        boot[i] = sample.mean() / sd if sd > 0 else 0.0
+    lo, med, hi = _np.percentile(boot, [2.5, 50, 97.5])
+    return float(lo), float(med), float(hi)
+
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -409,12 +427,21 @@ def main():
 
     if df.pnl_pct.std() > 0:
         sharpe_trade = df.pnl_pct.mean() / df.pnl_pct.std()
-        mean_dur = df.elapsed_hours.mean()
-        trades_per_year = (365 * 24) / mean_dur if mean_dur > 0 else 0
-        sharpe_annual = sharpe_trade * np.sqrt(trades_per_year)
+        # Honest trade frequency: trades per day across the test span
+        n_days_span = (df.entry_idx.max() - df.entry_idx.min()) / 24.0
+        if n_days_span > 0:
+            trades_per_year = len(df) / n_days_span * 365.0
+        else:
+            trades_per_year = float(len(df))
+        sharpe_annual = sharpe_trade * np.sqrt(trades_per_year) if trades_per_year > 0 else 0.0
         print(f"Sharpe per trade:    {sharpe_trade:.3f}")
-        print(f"Trades per year:     {trades_per_year:.0f}")
+        print(f"Trades per year:     {trades_per_year:.1f}")
         print(f"Annualized Sharpe:   {sharpe_annual:.2f}")
+
+        boot_sharpes = bootstrap_sharpe(df.pnl_pct.values, n_boot=10000)
+        if boot_sharpes is not None:
+            lo, med, hi = boot_sharpes
+            print(f"Trade Sharpe 95% CI: [{lo:.3f}, {hi:.3f}]  (median {med:.3f})")
     print()
 
     # Equity curve
@@ -435,7 +462,9 @@ def main():
     print()
 
     # Save results
-    out_path = Path(__file__).resolve().parent.parent / "reports" / "walk_forward.csv"
+    pair_tag = PAIR_FILTER.replace("/", "_").lower() if PAIR_FILTER != "all" else "all"
+    run_tag = os.getenv("RUN_TAG", "")
+    out_path = Path(__file__).resolve().parent.parent / "reports" / f"walk_forward_{pair_tag}{run_tag}.csv"
     out_path.parent.mkdir(exist_ok=True)
     df.to_csv(out_path, index=False)
     print(f"Saved: {out_path}")
@@ -445,13 +474,19 @@ def main():
     print("=" * 70)
     print("VERDICT")
     print("=" * 70)
-    if "sharpe_annual" in dir() or 'sharpe_annual' in locals():
-        if sharpe_annual >= 1.0:
-            print(f"✅ Sharpe {sharpe_annual:.2f} ≥ 1.0 → edge is real. Scale.")
-        elif sharpe_annual >= 0.5:
-            print(f"⚠️  Sharpe {sharpe_annual:.2f} — modest edge. Scale carefully.")
+    if 'boot_sharpes' in locals() and boot_sharpes is not None:
+        lo, med, hi = boot_sharpes
+        n_trades = len(df)
+        if n_trades < 20:
+            print(f"⏳ Only {n_trades} trades — sample too small for a verdict. Need >= 20.")
+        elif lo > 0:
+            print(f"✅ Trade Sharpe 95% CI [{lo:.2f}, {hi:.2f}] excludes zero → edge plausible.")
+        elif hi < 0:
+            print(f"❌ Trade Sharpe 95% CI [{lo:.2f}, {hi:.2f}] entirely below zero → edge negative.")
         else:
-            print(f"❌ Sharpe {sharpe_annual:.2f} < 0.5 → diagnose before scaling.")
+            print(f"⚠️  Trade Sharpe 95% CI [{lo:.2f}, {hi:.2f}] crosses zero → insufficient evidence.")
+    else:
+        print("⏳ Not enough trades to compute a bootstrap CI.")
 
 
 if __name__ == "__main__":
