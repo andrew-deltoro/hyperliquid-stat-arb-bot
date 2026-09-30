@@ -1,13 +1,12 @@
 """Position manager: open new, monitor existing, close on exit rules."""
 from __future__ import annotations
-
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-
 from .state import Position, State, load_state, save_state, now_iso
 from .signals import Signal
 from .executor import BaseExecutor, Order, build_executor
 from . import journal
+from .correlation_guard import CorrelationGuard
 
 
 def _parse_iso(s: str) -> datetime:
@@ -21,6 +20,11 @@ class PositionManager:
         self.state: State = load_state()
         self.log_fn = log_fn
         self.executor = executor or build_executor(cfg, log_fn=log_fn)
+
+        # Correlation guard
+        cluster_caps = cfg.raw.get("risk", {}).get("cluster_caps", {}) or {}
+        self.correlation_guard = CorrelationGuard(cluster_caps=cluster_caps)
+
 
     # ---------------- helpers ----------------
     def find_open(self, pair: str) -> Optional[dict]:
@@ -52,6 +56,19 @@ class PositionManager:
 
         if self.total_open_notional() + sig.notional > self.cfg.risk["max_total_notional"]:
             return {"opened": False, "reason": "max total notional"}
+
+        # Correlation guard: prevent correlated clusters from stacking
+        guard = self.correlation_guard.check(
+            coin_a=sig.coin_a,
+            coin_b=sig.coin_b,
+            new_notional=sig.notional,
+            open_positions=self.state.positions,
+        )
+        if not guard.allowed:
+            self.log_fn(f"[CORR-GUARD] {guard.reason}")
+            return {"opened": False, "reason": f"correlation_guard: {guard.reason}"}
+        self.log_fn(f"[CORR-GUARD] {guard.reason}")
+
 
         # Compute exit levels
         target_frac = self.cfg.position["target_frac"]

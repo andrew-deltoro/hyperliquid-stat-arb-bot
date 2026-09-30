@@ -32,10 +32,15 @@ position:
   beta_shift_max: 0.20
 
 
-
 risk:
   max_concurrent_positions: 3
-  max_total_notional: 500.0        # 10% of $5k account
+  max_total_notional: 500.0
+  cluster_caps:
+    btc_eth: 250.0
+    alt_l1: 300.0
+    defi: 300.0
+    oracle: 200.0
+    meme: 150.0
 
 executor:
   mode: "live"

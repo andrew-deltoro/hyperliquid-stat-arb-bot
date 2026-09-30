@@ -35,10 +35,16 @@ position:
   stop_mult: 3.0
   beta_shift_max: 0.20
 
-# Portfolio-level risk limits
 risk:
-  max_concurrent_positions: 5
-  max_total_notional: 500.0
+  max_concurrent_positions: 3
+  max_total_notional: 50.0
+  cluster_caps:
+    btc_eth: 25.0
+    alt_l1: 30.0
+    defi: 30.0
+    oracle: 20.0
+    meme: 15.0
+
 
 # Population prior on kappa (from multilevel OU fit, see test_multilevel_ou.py)
 ou_prior:
