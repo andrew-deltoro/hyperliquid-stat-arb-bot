@@ -167,6 +167,13 @@ def generate_signal(
     if scaler is not None:
         notional = scaler.scale_notional(notional)
 
+    # Minimum order floor: Hyperliquid rejects orders below $10.
+    # If the edge-weighted size is below that, skip rather than submit a
+    # rejected order.
+    MIN_ORDER_USD = 10.0
+    if 0 < notional < MIN_ORDER_USD:
+        notional = 0.0
+
     # Entry decision
     enough_z = abs(z) >= cfg.signal["z_entry_min"]
     enough_edge = edge >= cfg.signal["edge_min"]
