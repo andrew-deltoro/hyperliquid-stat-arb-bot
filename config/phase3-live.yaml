@@ -24,7 +24,7 @@ signal:
   max_btc_vol: 0.55    # skip entries above this annualized BTC vol
 
 position:
-  base_notional: 25.0         # $25 per leg (tiny live trial; scaler multiples this by balance ratio)
+  base_notional: 100.0        # $100 base; edge-scaling reduces to ~$25-40 per leg
   baseline_balance: 5000.0          # anchor for scale=1.0
   compounding_enabled: true
   scale_safeguards: true

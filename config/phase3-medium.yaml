@@ -18,12 +18,12 @@ data:
   lookback_hours: 480      # 30 days
 
 model:
-  coint_draws: 500
-  coint_tune: 500
-  ou_draws: 500
-  ou_tune: 500
-  chains: 2
-  cores: 2
+  coint_draws: 2000
+  coint_tune: 2000
+  ou_draws: 2000
+  ou_tune: 2000
+  chains: 4
+  cores: 4
 
 # Entry thresholds
 signal:
