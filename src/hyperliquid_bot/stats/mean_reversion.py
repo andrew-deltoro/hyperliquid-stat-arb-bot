@@ -35,6 +35,7 @@ def fit_ou(
     draws: int = 1000,
     tune: int = 1000,
     chains: int = 4,
+    cores: int = 1
     seed: int = 0,
     progressbar: bool = True,
     kappa_prior_pop: float | None = None,
@@ -75,7 +76,7 @@ def fit_ou(
             kappa = pm.Beta("kappa", alpha=2.0, beta=2.0)
 
         # Residual noise after mean reversion step
-        sigma = pm.HalfCauchy("sigma", beta=1.0)
+        sigma = pm.HalfNormal("sigma", sigma=0.5)
 
         # Fat tails again (Ch 11)
         nu = pm.Exponential("nu", lam=1 / 10.0)
@@ -84,7 +85,7 @@ def fit_ou(
         pm.StudentT("obs", nu=nu, mu=mu, sigma=sigma, observed=y_next)
 
         idata = pm.sample(
-            draws=draws, tune=tune, chains=chains, cores=1,
+            draws=draws, tune=tune, chains=chains, cores=cores,
             target_accept=0.95, random_seed=seed, progressbar=progressbar,
         )
 
