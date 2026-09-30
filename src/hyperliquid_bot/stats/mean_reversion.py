@@ -35,7 +35,7 @@ def fit_ou(
     draws: int = 1000,
     tune: int = 1000,
     chains: int = 4,
-    cores: int = 1
+    cores: int = 1,
     seed: int = 0,
     progressbar: bool = True,
     kappa_prior_pop: float | None = None,
