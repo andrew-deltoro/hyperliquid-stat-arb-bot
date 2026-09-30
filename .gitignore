@@ -42,3 +42,5 @@ Thumbs.db
 hlbot-status.sh
 *.bak
 *.tmp
+*.bak-*
+scripts/walk_forward.py.bak-*
