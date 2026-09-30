@@ -37,13 +37,18 @@ def fit_cointegration(
     assert len(log_a) == len(log_b)
     assert len(log_a) > 20, "Need at least ~20 bars"
 
+    # Center log_b to decorrelate alpha and beta. This drastically speeds up NUTS
+    # on cointegration models. beta stays the same; alpha shifts by beta * mean(log_b).
+    log_b_mean = float(np.mean(log_b))
+    log_b_c = log_b - log_b_mean
+
     with pm.Model() as model:
-        alpha = pm.Normal("alpha", mu=0.0, sigma=5.0)
+        alpha_c = pm.Normal("alpha", mu=0.0, sigma=5.0)   # intercept at centered scale
         beta = pm.Normal("beta", mu=1.0, sigma=1.0)
         sigma = pm.HalfNormal("sigma", sigma=0.5)
         nu = pm.Exponential("nu", lam=1 / 10.0)
 
-        mu = alpha + beta * log_b
+        mu = alpha_c + beta * log_b_c
         pm.StudentT("obs", nu=nu, mu=mu, sigma=sigma, observed=log_a)
 
         idata = pm.sample(
@@ -63,8 +68,11 @@ def fit_cointegration(
     ))
     converged = max_rhat < 1.05
 
-    alpha_s = idata.posterior["alpha"].stack(s=("chain", "draw")).values
-    beta_s = idata.posterior["beta"].stack(s=("chain", "draw")).values
+    alpha_c_s = idata.posterior["alpha"].stack(s=("chain", "draw")).values
+    beta_s_raw = idata.posterior["beta"].stack(s=("chain", "draw")).values
+    # Recover alpha on original (uncentered) scale: alpha = alpha_c - beta * mean(log_b)
+    alpha_s = alpha_c_s - beta_s_raw * log_b_mean
+    beta_s = beta_s_raw
     sigma_s = idata.posterior["sigma"].stack(s=("chain", "draw")).values
     nu_s = idata.posterior["nu"].stack(s=("chain", "draw")).values
 
