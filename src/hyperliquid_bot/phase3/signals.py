@@ -7,6 +7,7 @@ from typing import Optional
 import numpy as np
 
 from ..data.ohlcv import aligned_close_prices
+from ..data.ohlcv import fetch_candles
 from ..stats.cointegration import fit_cointegration
 from ..stats.mean_reversion import (
     fit_ou,
@@ -52,6 +53,7 @@ def generate_signal(
     kappa_prior_pop: Optional[float] = None,
     kappa_prior_pop_sd: Optional[float] = None,
     scaler=None,
+    btc_vol: Optional[float] = None,
 ) -> Signal:
     """Fetch data, fit coint + OU, produce a Signal."""
     pair = f"{coin_a}/{coin_b}"
@@ -125,7 +127,15 @@ def generate_signal(
     enough_edge = edge >= cfg.signal["edge_min"]
     models_ok = coint.converged and ou.converged
 
-    if enough_z and enough_edge and models_ok and notional > 0:
+    # Regime filter: skip entries during high-vol regimes
+    regime_ok = True
+    if btc_vol is not None:
+        max_vol = cfg.signal.get("max_btc_vol", 1.0)
+        if btc_vol > max_vol:
+            regime_ok = False
+
+
+    if enough_z and enough_edge and models_ok and regime_ok and notional > 0:
         action = "OPEN"
         direction = ("SHORT_A_LONG_B" if current_spread > 0
                      else "LONG_A_SHORT_B")

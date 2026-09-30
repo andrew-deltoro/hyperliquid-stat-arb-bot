@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..data.ohlcv import aligned_close_prices
+from ..data.ohlcv import fetch_candles
 from .config import load_config
 from .signals import generate_signal
 from .positions import PositionManager
@@ -18,6 +19,20 @@ def _log(msg: str, fh=None):
     if fh is not None:
         fh.write(msg + "\n")
         fh.flush()
+
+def _get_btc_vol_24h() -> float:
+    """Compute annualized 24h realized vol of BTC."""
+    import numpy as np
+    try:
+        candles = fetch_candles("BTC", interval="1h", lookback_hours=48)
+        closes = np.array([c.c for c in candles])
+        if len(closes) < 25:
+            return 0.0
+        returns = np.diff(np.log(closes))
+        last_24 = returns[-24:]
+        return float(last_24.std() * np.sqrt(24 * 365))
+    except Exception:
+        return 0.0
 
 def _log_to_fh(fh):
     def _fn(msg):
@@ -105,6 +120,17 @@ def run_cycle(config_path=None, log_path=None):
 
         # ---------- 1. Generate signals ----------
         _log("--- Generating signals ---", fh)
+
+        # Compute BTC vol for regime filter
+        btc_vol = _get_btc_vol_24h()
+        max_vol = cfg.signal.get("max_btc_vol", 1.0)
+        vol_status = "OK" if btc_vol <= max_vol else "HIGH — will skip entries"
+        _log(
+            f"BTC 24h vol: {btc_vol*100:.1f}% "
+            f"(threshold {max_vol*100:.0f}%) — {vol_status}",
+            fh,
+        )
+
         signals = {}
         for a, b in cfg.pairs:
             pair = f"{a}/{b}"
@@ -115,6 +141,7 @@ def run_cycle(config_path=None, log_path=None):
                     kappa_prior_pop=kp,
                     kappa_prior_pop_sd=kp_sd,
                     scaler=scaler,
+                    btc_vol=btc_vol,
                 )
             except Exception as e:
                 _log(f"[{pair}] FAILED: {type(e).__name__}: {e}", fh)

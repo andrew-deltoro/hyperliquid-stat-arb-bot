@@ -23,6 +23,7 @@ model:
 signal:
   z_entry_min: 1.5         # |z| must exceed this to fire a signal
   edge_min: 0.05           # P(revert) - 0.5 must exceed this
+  max_btc_vol: 0.55    # skip entries above this annualized BTC vol
 
 # Position construction & exit
 position:
