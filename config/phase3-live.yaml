@@ -2,8 +2,6 @@
 # Scale by editing the safeguards block only.
 
 pairs:
-  - ["LINK", "PYTH"]
-  - ["UNI", "SUSHI"]
   - ["ETH", "BTC"]
   - ["SOL", "AVAX"]
   - ["AAVE", "COMP"]

@@ -7,8 +7,6 @@ pairs:
   - ["ETH", "BTC"]
   - ["SOL", "AVAX"]
   - ["AAVE", "COMP"]
-  - ["ARB", "OP"]
-  - ["INJ", "TIA"]
 
 data:
   interval: "1h"
