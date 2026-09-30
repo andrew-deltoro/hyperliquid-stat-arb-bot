@@ -103,7 +103,7 @@ def main():
             for j in range(i+1, len(present)):
                 a, b = present[i], present[j]
                 corr = float(np.corrcoef(data[a], data[b])[0, 1])
-                if corr > 0.75:
+                if corr > 0.60:
                     candidates_out.append({
                         "pair": f"{a}/{b}",
                         "sector": sector,
