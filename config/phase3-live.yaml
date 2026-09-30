@@ -15,7 +15,8 @@ model:
   coint_tune: 500
   ou_draws: 500
   ou_tune: 500
-  chains: 4
+  chains: 2
+  cores: 2
 
 signal:
   z_entry_min: 1.5
