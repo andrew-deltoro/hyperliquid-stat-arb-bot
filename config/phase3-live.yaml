@@ -24,7 +24,7 @@ signal:
   max_btc_vol: 0.55    # skip entries above this annualized BTC vol
 
 position:
-  base_notional: 2700.0
+  base_notional: 25.0         # $25 per leg (tiny live trial; scaler multiples this by balance ratio)
   baseline_balance: 5000.0          # anchor for scale=1.0
   compounding_enabled: true
   scale_safeguards: true
@@ -35,7 +35,7 @@ position:
 
 
 risk:
-  max_concurrent_positions: 3
+  max_concurrent_positions: 2    # 2 concurrent pairs max during trial
   max_total_notional: 500.0
   cluster_caps:
     btc_eth: 250.0
