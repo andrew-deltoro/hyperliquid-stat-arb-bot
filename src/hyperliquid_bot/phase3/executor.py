@@ -276,6 +276,8 @@ class LiveExecutor(BaseExecutor):
         order_status = "error"
         oid = ""
         error_msg = ""
+        actual_filled_size = rounded_size   # assume full unless we learn otherwise
+        is_partial = False
 
         if isinstance(result, dict):
             top = result.get("status", "unknown")
@@ -297,23 +299,35 @@ class LiveExecutor(BaseExecutor):
                         elif "filled" in first:
                             order_status = "filled"
                             oid = str(first["filled"].get("oid", ""))
+                            try:
+                                sz = float(first["filled"].get("totalSz", rounded_size))
+                            except (TypeError, ValueError):
+                                sz = rounded_size
+                            actual_filled_size = sz
+                            if sz < rounded_size * 0.95:
+                                is_partial = True
                         elif "resting" in first:
                             order_status = "filled"
                             oid = str(first["resting"].get("oid", ""))
+                            try:
+                                sz = float(first["resting"].get("sz", rounded_size))
+                            except (TypeError, ValueError):
+                                sz = rounded_size
+                            actual_filled_size = sz
                         else:
                             error_msg = f"unknown status: {first}"
                     else:
                         error_msg = f"non-dict status: {first}"
 
         fill = Fill(
-            coin=order.coin, side=order.side, size=rounded_size,
+            coin=order.coin, side=order.side, size=actual_filled_size,
             price=ref_price, notional_usd=order.notional_usd,
             tag=order.tag,
             timestamp_iso=datetime.now(timezone.utc).isoformat(),
             simulated=False,
-            status=order_status,
+            status=("partial" if is_partial else order_status),
             order_id=oid,
-            error=error_msg,
+            error=("partial_fill" if is_partial else error_msg),
         )
 
         if fill.status == "filled":
@@ -322,6 +336,13 @@ class LiveExecutor(BaseExecutor):
                 f"[LIVE-EXECUTOR] TAKER {fill.side.upper():4s} "
                 f"{fill.size:.6f} {fill.coin:6s} @ {fill.price:.6f}  "
                 f"oid={fill.order_id}  tag={fill.tag}"
+            )
+        elif fill.status == "partial":
+            self.safeguards.increment_daily_order_count()
+            self.log_fn(
+                f"[LIVE-EXECUTOR] PARTIAL {fill.side.upper():4s} "
+                f"{fill.size:.6f} {fill.coin:6s} @ {fill.price:.6f}  "
+                f"(requested {rounded_size:.6f})  oid={fill.order_id}  tag={fill.tag}"
             )
         else:
             self.log_fn(

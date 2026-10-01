@@ -51,6 +51,30 @@ class PositionManager:
         if self.find_open(sig.pair) is not None:
             return {"opened": False, "reason": "already open"}
 
+        # Defensive: verify against live exchange (state can drift)
+        if self.executor is not None and hasattr(self.executor, "info"):
+            try:
+                live_state = self.executor.info.user_state(
+                    self.executor.wallet_address
+                )
+                live_coins = {
+                    p["position"]["coin"]
+                    for p in live_state.get("assetPositions", [])
+                    if float(p["position"].get("szi", 0)) != 0
+                }
+                conflicting = {sig.coin_a, sig.coin_b} & live_coins
+                if conflicting:
+                    self.log_fn(
+                        f"[PRE-TRADE] {sig.pair}: already has live exposure "
+                        f"on {conflicting}. Skipping to avoid duplicate."
+                    )
+                    return {
+                        "opened": False,
+                        "reason": f"live_exposure: {conflicting}",
+                    }
+            except Exception as e:
+                self.log_fn(f"[PRE-TRADE] exchange check failed: {e}")
+
         if self.open_count() >= self.cfg.risk["max_concurrent_positions"]:
             return {"opened": False, "reason": "max concurrent positions"}
 
