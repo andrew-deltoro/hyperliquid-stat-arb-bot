@@ -12,6 +12,10 @@ pairs:
   - ["AAVE", "COMP"]
   - ["ARB", "OP"]
   - ["INJ", "TIA"]
+  - ["xyz:GOLD", "xyz:SILVER"]
+  - ["xyz:NVDA", "xyz:PLTR"]
+  - ["xyz:GOLD", "xyz:SILVER"]
+  - ["xyz:NVDA", "xyz:PLTR"]
 
 data:
   interval: "1h"

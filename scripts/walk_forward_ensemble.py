@@ -37,6 +37,17 @@ ALL_PAIRS = [
     ("APT", "TIA"),
     ("kPEPE", "WIF"),
     ("DOT", "SUI"),
+    ("xyz:GOLD", "xyz:SILVER"),
+    ("xyz:NVDA", "xyz:PLTR"),
+    ("xyz:COIN", "xyz:MSTR"),
+    ("xyz:AMD", "xyz:INTC"),
+    ("xyz:AAPL", "xyz:META"),
+    ("xyz:GOOGL", "xyz:META"),
+    ("xyz:NVDA", "xyz:MU"),
+    ("xyz:NVDA", "xyz:TSM"),
+    ("xyz:AAPL", "xyz:AMZN"),
+    ("xyz:GOOGL", "xyz:AMZN"),
+    ("xyz:MU", "xyz:TSM"),
 ]
 PAIRS = ALL_PAIRS if PAIR_FILTER == "all" else [
     p for p in ALL_PAIRS if f"{p[0]}/{p[1]}" == PAIR_FILTER
