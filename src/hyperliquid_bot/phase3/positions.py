@@ -219,14 +219,51 @@ class PositionManager:
         direction = pos["direction"]
         long_a = direction == "LONG_A_SHORT_B"
 
-        # --- 1. TARGET ---
-        target_spread = pos["target_spread"]
-        if long_a:
-            if current_centered >= target_spread:
-                return close("target")
+        # --- 1. TARGET or TRAILING STOP ---
+        use_trail = self.cfg.position.get("use_trailing_stop", False)
+        if use_trail:
+            trail_frac = float(self.cfg.position.get("trail_frac", 0.25))
+            activation_frac = float(self.cfg.position.get("trail_activation_frac", 0.50))
+            entry_spread = pos["entry_spread"]
+            entry_abs = abs(entry_spread)
+
+            # Track best (closest-to-zero) spread seen since entry
+            best_spread = pos.get("best_spread", entry_spread)
+            if long_a:
+                if current_centered > best_spread:
+                    best_spread = current_centered
+            else:
+                if current_centered < best_spread:
+                    best_spread = current_centered
+
+            # Persist best_spread so it survives across cycles
+            if best_spread != pos.get("best_spread"):
+                pos["best_spread"] = best_spread
+                save_state(self.state)
+
+            # Activation: has spread reverted at least activation_frac of entry magnitude?
+            if long_a:
+                reversion = current_centered - entry_spread
+            else:
+                reversion = entry_spread - current_centered
+            activated = reversion >= (activation_frac * entry_abs)
+
+            if activated:
+                trail_dist = trail_frac * entry_abs
+                if long_a:
+                    if current_centered < best_spread - trail_dist:
+                        return close("trail")
+                else:
+                    if current_centered > best_spread + trail_dist:
+                        return close("trail")
         else:
-            if current_centered <= target_spread:
-                return close("target")
+            target_spread = pos["target_spread"]
+            if long_a:
+                if current_centered >= target_spread:
+                    return close("target")
+            else:
+                if current_centered <= target_spread:
+                    return close("target")
 
         # --- 2. DIVERGENCE STOP ---
         stop_spread = pos["stop_spread"]

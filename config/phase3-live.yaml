@@ -40,6 +40,9 @@ position:
   compounding_enabled: true
   scale_safeguards: true
   target_frac: 0.75    # validated: 68pct Sharpe improvement over 0.5 (n=168)
+  use_trailing_stop: true     # validated: +38% mean PnL vs fixed 0.75
+  trail_frac: 0.25            # trail width as fraction of entry magnitude
+  trail_activation_frac: 0.50 # activate trail at 50% reversion
   exit_horizon_mult: 3.33   # 120h hold (matches validated experiment)
   stop_mult: 3.0
   beta_shift_max: 0.20
