@@ -30,7 +30,8 @@ model:
   cores: 4
 
 signal:
-  z_entry_min: 1.0    # validated at z=1.0: n=19, CI=[-0.098,+1.250] (4.2x tighter than z=1.5)
+  z_entry_min: 1.0
+  half_life_max_hours: 96   # validated: HL>96h is net-negative (mean -0.47%)    # validated at z=1.0: n=19, CI=[-0.098,+1.250] (4.2x tighter than z=1.5)
   edge_min: 0.05
   max_btc_vol: 0.55    # skip entries above this annualized BTC vol
 

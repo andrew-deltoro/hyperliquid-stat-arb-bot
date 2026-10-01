@@ -153,6 +153,11 @@ def generate_signal(
         paths_per_sample=10,
     )
 
+    # Half-life filter: reject slow-reverting pairs (validated: HL>96h net-negative)
+    hl_max = float(cfg.signal.get("half_life_max_hours", 999999))
+    if ou.half_life_bars > hl_max:
+        return None
+
     edge = p_revert - 0.5
 
     notional = position_size(
