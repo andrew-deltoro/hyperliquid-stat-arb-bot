@@ -5,6 +5,7 @@ pairs:
   - ["ETH", "BTC"]
   - ["SOL", "AVAX"]
   - ["AAVE", "COMP"]
+  - ["SNX", "DYDX"]
 
 data:
   interval: "1h"
