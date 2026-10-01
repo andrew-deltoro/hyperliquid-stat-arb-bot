@@ -39,7 +39,7 @@ position:
   baseline_balance: 3105.0    # matches actual account; scale=1.0
   compounding_enabled: true
   scale_safeguards: true
-  target_frac: 0.5
+  target_frac: 0.75    # validated: 68pct Sharpe improvement over 0.5 (n=168)
   exit_horizon_mult: 2.0
   stop_mult: 3.0
   beta_shift_max: 0.20
