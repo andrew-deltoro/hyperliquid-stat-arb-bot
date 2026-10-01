@@ -1,0 +1,121 @@
+[
+  {
+    "pair": "BTC/ETH",
+    "sector": "btc_eth",
+    "coin_a": "BTC",
+    "coin_b": "ETH",
+    "corr_90d": 0.8515
+  },
+  {
+    "pair": "SOL/SUI",
+    "sector": "l1_major",
+    "coin_a": "SOL",
+    "coin_b": "SUI",
+    "corr_90d": 0.745
+  },
+  {
+    "pair": "DOGE/kPEPE",
+    "sector": "meme",
+    "coin_a": "DOGE",
+    "coin_b": "kPEPE",
+    "corr_90d": 0.7242
+  },
+  {
+    "pair": "SUI/SEI",
+    "sector": "l1_major",
+    "coin_a": "SUI",
+    "coin_b": "SEI",
+    "corr_90d": 0.6898
+  },
+  {
+    "pair": "APT/SUI",
+    "sector": "l1_major",
+    "coin_a": "APT",
+    "coin_b": "SUI",
+    "corr_90d": 0.6811
+  },
+  {
+    "pair": "DOGE/WIF",
+    "sector": "meme",
+    "coin_a": "DOGE",
+    "coin_b": "WIF",
+    "corr_90d": 0.6626
+  },
+  {
+    "pair": "AVAX/SUI",
+    "sector": "l1_major",
+    "coin_a": "AVAX",
+    "coin_b": "SUI",
+    "corr_90d": 0.6457
+  },
+  {
+    "pair": "DOT/SUI",
+    "sector": "l1_major",
+    "coin_a": "DOT",
+    "coin_b": "SUI",
+    "corr_90d": 0.6443
+  },
+  {
+    "pair": "SOL/AVAX",
+    "sector": "l1_major",
+    "coin_a": "SOL",
+    "coin_b": "AVAX",
+    "corr_90d": 0.6417
+  },
+  {
+    "pair": "APT/TIA",
+    "sector": "l1_major",
+    "coin_a": "APT",
+    "coin_b": "TIA",
+    "corr_90d": 0.6356
+  },
+  {
+    "pair": "kPEPE/WIF",
+    "sector": "meme",
+    "coin_a": "kPEPE",
+    "coin_b": "WIF",
+    "corr_90d": 0.629
+  },
+  {
+    "pair": "APT/SEI",
+    "sector": "l1_major",
+    "coin_a": "APT",
+    "coin_b": "SEI",
+    "corr_90d": 0.6264
+  },
+  {
+    "pair": "SUI/TIA",
+    "sector": "l1_major",
+    "coin_a": "SUI",
+    "coin_b": "TIA",
+    "corr_90d": 0.6262
+  },
+  {
+    "pair": "DOT/APT",
+    "sector": "l1_major",
+    "coin_a": "DOT",
+    "coin_b": "APT",
+    "corr_90d": 0.6248
+  },
+  {
+    "pair": "ARB/OP",
+    "sector": "l2",
+    "coin_a": "ARB",
+    "coin_b": "OP",
+    "corr_90d": 0.6216
+  },
+  {
+    "pair": "SOL/APT",
+    "sector": "l1_major",
+    "coin_a": "SOL",
+    "coin_b": "APT",
+    "corr_90d": 0.6118
+  },
+  {
+    "pair": "SOL/SEI",
+    "sector": "l1_major",
+    "coin_a": "SOL",
+    "coin_b": "SEI",
+    "corr_90d": 0.6015
+  }
+]
