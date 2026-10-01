@@ -44,3 +44,4 @@ hlbot-status.sh
 *.tmp
 *.bak-*
 scripts/walk_forward.py.bak-*
+reports/.screener_cache/
