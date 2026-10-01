@@ -1,0 +1,79 @@
+[
+  {
+    "pair": "xyz:NVDA/xyz:PLTR",
+    "sector": "ai_compute",
+    "eg_pval": 0.029898983563094648,
+    "adf_pval": 0.007246068148935243,
+    "beta": 0.2717814445485833
+  },
+  {
+    "pair": "xyz:GOLD/xyz:SILVER",
+    "sector": "metals",
+    "eg_pval": 0.022531882728227,
+    "adf_pval": 0.013280265697699495,
+    "beta": 0.6733223496535529
+  },
+  {
+    "pair": "xyz:COIN/xyz:MSTR",
+    "sector": "crypto_equities",
+    "eg_pval": 0.17723177602846296,
+    "adf_pval": 0.018640440482114135,
+    "beta": 0.44340016770882384
+  },
+  {
+    "pair": "xyz:AAPL/xyz:META",
+    "sector": "big_tech",
+    "eg_pval": 0.08033133961452793,
+    "adf_pval": 0.023608781049923238,
+    "beta": 0.278515481139247
+  },
+  {
+    "pair": "xyz:AMD/xyz:INTC",
+    "sector": "semis",
+    "eg_pval": 0.1213610930396321,
+    "adf_pval": 0.025651374487055952,
+    "beta": 0.7225800073900432
+  },
+  {
+    "pair": "xyz:GOOGL/xyz:META",
+    "sector": "big_tech",
+    "eg_pval": 0.08566210769688021,
+    "adf_pval": 0.02577183171707276,
+    "beta": 0.01620329503396312
+  },
+  {
+    "pair": "xyz:GOOGL/xyz:AMZN",
+    "sector": "big_tech",
+    "eg_pval": 0.22469129254867604,
+    "adf_pval": 0.03288362000492321,
+    "beta": 0.3168945801150013
+  },
+  {
+    "pair": "xyz:NVDA/xyz:MU",
+    "sector": "semis",
+    "eg_pval": 0.16904343713927295,
+    "adf_pval": 0.04595898498289135,
+    "beta": 0.34794767673127125
+  },
+  {
+    "pair": "xyz:MU/xyz:TSM",
+    "sector": "semis",
+    "eg_pval": 0.02550272170677541,
+    "adf_pval": 0.062194072085586874,
+    "beta": 1.7716827980109795
+  },
+  {
+    "pair": "xyz:AAPL/xyz:AMZN",
+    "sector": "big_tech",
+    "eg_pval": 0.2600815700633653,
+    "adf_pval": 0.0733534489867965,
+    "beta": -0.43179251820698344
+  },
+  {
+    "pair": "xyz:NVDA/xyz:TSM",
+    "sector": "semis",
+    "eg_pval": 0.1987228068231715,
+    "adf_pval": 0.07869938764407824,
+    "beta": 0.5754795255951551
+  }
+]
