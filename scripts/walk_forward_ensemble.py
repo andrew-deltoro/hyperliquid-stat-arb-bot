@@ -26,10 +26,12 @@ PAIR_FILTER = os.getenv("PAIR_FILTER", "all")
 RUN_TAG = os.getenv("RUN_TAG", "_ensemble")
 
 ALL_PAIRS = [
+    # Original live pairs
     ("ETH", "BTC"),
     ("SOL", "AVAX"),
     ("AAVE", "COMP"),
     ("SNX", "DYDX"),
+    # Crypto candidates from cointegration screener
     ("AVAX", "NEAR"),
     ("DOGE", "WIF"),
     ("DOT", "INJ"),
@@ -37,17 +39,28 @@ ALL_PAIRS = [
     ("APT", "TIA"),
     ("kPEPE", "WIF"),
     ("DOT", "SUI"),
+    # HIP-3 candidates
     ("xyz:GOLD", "xyz:SILVER"),
     ("xyz:NVDA", "xyz:PLTR"),
     ("xyz:COIN", "xyz:MSTR"),
     ("xyz:AMD", "xyz:INTC"),
-    ("xyz:AAPL", "xyz:META"),
-    ("xyz:GOOGL", "xyz:META"),
     ("xyz:NVDA", "xyz:MU"),
     ("xyz:NVDA", "xyz:TSM"),
-    ("xyz:AAPL", "xyz:AMZN"),
-    ("xyz:GOOGL", "xyz:AMZN"),
     ("xyz:MU", "xyz:TSM"),
+    # Research-backed pairs from academic literature
+    ("ETH", "LTC"),
+    ("BNB", "ETH"),
+    ("BTC", "LTC"),
+    ("BTC", "BCH"),
+    ("LTC", "DOGE"),
+    ("ETH", "SOL"),
+    ("AAVE", "BTC"),
+    ("MKR", "BTC"),
+    ("SNX", "BTC"),
+    ("SOL", "BTC"),
+    ("ADA", "DOT"),
+    ("ATOM", "NEAR"),
+    ("FIL", "AR"),
 ]
 PAIRS = ALL_PAIRS if PAIR_FILTER == "all" else [
     p for p in ALL_PAIRS if f"{p[0]}/{p[1]}" == PAIR_FILTER
