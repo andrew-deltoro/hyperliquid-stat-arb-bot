@@ -45,7 +45,6 @@ ALL_PAIRS = [
     ("kPEPE", "WIF"),
     ("DOT", "SUI"),
     # Mass screener batch 2 — all 14 filtered candidates
-    ("ORDI", "kPEPE"),
     ("MEME", "TIA"),
     ("SNX", "TIA"),
     ("ETC", "RSR"),
@@ -53,8 +52,6 @@ ALL_PAIRS = [
     ("ORDI", "SOL"),
     ("FET", "IMX"),
     ("GMT", "IMX"),
-    ("ORDI", "XRP"),
-    ("IMX", "MEME"),
     ("AVAX", "LTC"),
     ("SNX", "SUI"),
     ("GMT", "TIA"),
