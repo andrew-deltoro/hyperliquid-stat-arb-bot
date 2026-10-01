@@ -154,9 +154,9 @@ def generate_signal(
     )
 
     # Half-life filter: reject slow-reverting pairs (validated: HL>96h net-negative)
+    # Flag-based instead of None-return to avoid downstream None propagation.
     hl_max = float(cfg.signal.get("half_life_max_hours", 999999))
-    if ou.half_life_bars > hl_max:
-        return None
+    half_life_rejected = ou.half_life_bars > hl_max
 
     edge = p_revert - 0.5
 
@@ -192,7 +192,7 @@ def generate_signal(
             regime_ok = False
 
 
-    if enough_z and enough_edge and models_ok and regime_ok and notional > 0:
+    if enough_z and enough_edge and models_ok and regime_ok and notional > 0 and not half_life_rejected:
         action = "OPEN"
         direction = ("SHORT_A_LONG_B" if current_spread > 0
                      else "LONG_A_SHORT_B")
