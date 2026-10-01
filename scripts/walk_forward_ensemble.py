@@ -25,13 +25,7 @@ from src.hyperliquid_bot.data.ohlcv import aligned_close_prices
 PAIR_FILTER = os.getenv("PAIR_FILTER", "all")
 RUN_TAG = os.getenv("RUN_TAG", "_ensemble")
 
-ALL_PAIRS = [
-    ("LINK", "PYTH"),
-    ("UNI", "SUSHI"),
-    ("ETH", "BTC"),
-    ("SOL", "AVAX"),
-    ("AAVE", "COMP"),
-]
+ALL_PAIRS = [    ("ETH", "BTC"),    ("SOL", "AVAX"),    ("AAVE", "COMP"),    ("SOL", "SUI"),    ("APT", "TIA"),    ("kPEPE", "WIF"),    ("DOT", "SUI"),]
 PAIRS = ALL_PAIRS if PAIR_FILTER == "all" else [
     p for p in ALL_PAIRS if f"{p[0]}/{p[1]}" == PAIR_FILTER
 ]
