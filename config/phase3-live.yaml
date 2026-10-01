@@ -8,6 +8,12 @@ pairs:
   - ["SNX", "DYDX"]
   - ["xyz:GOLD", "xyz:SILVER"]
   - ["xyz:NVDA", "xyz:PLTR"]
+  - ["MEME", "TIA"]
+  - ["SNX", "TIA"]
+  - ["ORDI", "SOL"]
+  - ["SNX", "SUI"]
+  - ["GMT", "MEME"]
+  - ["ETC", "NEO"]
   - ["LTC", "DOGE"]
   - ["ETH", "SOL"]
 

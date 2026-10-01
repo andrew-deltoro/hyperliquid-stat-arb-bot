@@ -31,7 +31,12 @@ ALL_PAIRS = [
     ("SOL", "AVAX"),
     ("AAVE", "COMP"),
     ("SNX", "DYDX"),
-    # Crypto candidates from cointegration screener
+    ("LTC", "DOGE"),
+    ("ETH", "SOL"),
+    # HIP-3 live pairs
+    ("xyz:GOLD", "xyz:SILVER"),
+    ("xyz:NVDA", "xyz:PLTR"),
+    # Screener batch 1 (crypto)
     ("AVAX", "NEAR"),
     ("DOGE", "WIF"),
     ("DOT", "INJ"),
@@ -39,28 +44,21 @@ ALL_PAIRS = [
     ("APT", "TIA"),
     ("kPEPE", "WIF"),
     ("DOT", "SUI"),
-    # HIP-3 candidates
-    ("xyz:GOLD", "xyz:SILVER"),
-    ("xyz:NVDA", "xyz:PLTR"),
-    ("xyz:COIN", "xyz:MSTR"),
-    ("xyz:AMD", "xyz:INTC"),
-    ("xyz:NVDA", "xyz:MU"),
-    ("xyz:NVDA", "xyz:TSM"),
-    ("xyz:MU", "xyz:TSM"),
-    # Research-backed pairs from academic literature
-    ("ETH", "LTC"),
-    ("BNB", "ETH"),
-    ("BTC", "LTC"),
-    ("BTC", "BCH"),
-    ("LTC", "DOGE"),
-    ("ETH", "SOL"),
-    ("AAVE", "BTC"),
-    ("MKR", "BTC"),
-    ("SNX", "BTC"),
-    ("SOL", "BTC"),
-    ("ADA", "DOT"),
-    ("ATOM", "NEAR"),
-    ("FIL", "AR"),
+    # Mass screener batch 2 — all 14 filtered candidates
+    ("ORDI", "kPEPE"),
+    ("MEME", "TIA"),
+    ("SNX", "TIA"),
+    ("ETC", "RSR"),
+    ("MEME", "OP"),
+    ("ORDI", "SOL"),
+    ("FET", "IMX"),
+    ("GMT", "IMX"),
+    ("ORDI", "XRP"),
+    ("IMX", "MEME"),
+    ("AVAX", "LTC"),
+    ("SNX", "SUI"),
+    ("GMT", "TIA"),
+    ("ETC", "NEO"),
 ]
 PAIRS = ALL_PAIRS if PAIR_FILTER == "all" else [
     p for p in ALL_PAIRS if f"{p[0]}/{p[1]}" == PAIR_FILTER

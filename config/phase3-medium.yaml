@@ -14,6 +14,14 @@ pairs:
   - ["INJ", "TIA"]
   - ["xyz:GOLD", "xyz:SILVER"]
   - ["xyz:NVDA", "xyz:PLTR"]
+  - ["LTC", "DOGE"]
+  - ["ETC", "RSR"]
+  - ["MEME", "OP"]
+  - ["FET", "IMX"]
+  - ["GMT", "IMX"]
+  - ["AVAX", "LTC"]
+  - ["GMT", "TIA"]
+  - ["ETH", "SOL"]
 data:
   interval: "1h"
   lookback_hours: 480      # 30 days
