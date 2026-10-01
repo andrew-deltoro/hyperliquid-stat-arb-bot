@@ -14,9 +14,6 @@ pairs:
   - ["INJ", "TIA"]
   - ["xyz:GOLD", "xyz:SILVER"]
   - ["xyz:NVDA", "xyz:PLTR"]
-  - ["xyz:GOLD", "xyz:SILVER"]
-  - ["xyz:NVDA", "xyz:PLTR"]
-
 data:
   interval: "1h"
   lookback_hours: 480      # 30 days

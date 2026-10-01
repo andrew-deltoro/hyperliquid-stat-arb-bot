@@ -6,6 +6,8 @@ pairs:
   - ["SOL", "AVAX"]
   - ["AAVE", "COMP"]
   - ["SNX", "DYDX"]
+  - ["xyz:GOLD", "xyz:SILVER"]
+  - ["xyz:NVDA", "xyz:PLTR"]
 
 data:
   interval: "1h"
@@ -57,7 +59,7 @@ executor:
 
 safeguards:
   max_notional_per_order: 250.0    # $250 per leg cap
-  max_total_exposure_usd: 750.0  # 3 pairs × $250 total
+  max_total_exposure_usd: 900.0  # 6 pairs but only 4 concurrent via max_concurrent_positions
   max_daily_orders: 10
 
 fees:
