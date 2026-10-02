@@ -61,6 +61,10 @@ ALL_PAIRS = [
     ("RENDER", "SNX"),
     ("MOODENG", "YGG"),
     ("LINEA", "NEO"),
+    # HIP-3 remaining untested pairs
+    ("xyz:NVDA", "xyz:TSM"),
+    ("xyz:MU", "xyz:TSM"),
+    ("xyz:AAPL", "xyz:AMZN"),
 ]
 PAIRS = ALL_PAIRS if PAIR_FILTER == "all" else [
     p for p in ALL_PAIRS if f"{p[0]}/{p[1]}" == PAIR_FILTER
