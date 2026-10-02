@@ -52,7 +52,7 @@ position:
 
 risk:
   max_concurrent_positions: 8    # all 8 pairs can have positions
-  max_total_notional: 500.0
+  max_total_notional: 1500.0   # allow up to ~10 concurrent pairs (safeguard cap is 2500)
   cluster_caps:
     btc_eth: 250.0
     alt_l1: 300.0
