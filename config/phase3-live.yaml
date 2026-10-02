@@ -37,7 +37,7 @@ signal:
   max_btc_vol: 0.55    # skip entries above this annualized BTC vol
 
 position:
-  base_notional: 2000.0        # $500 base × edge × tail × vol ≈ $25-40 per leg
+  base_notional: 2500.0       # +25% sizing (graduation level 1.25x)
   baseline_balance: 3105.0    # matches actual account; scale=1.0
   compounding_enabled: true
   scale_safeguards: true
@@ -71,8 +71,8 @@ executor:
 
 
 safeguards:
-  max_notional_per_order: 250.0    # $250 per leg cap
-  max_total_exposure_usd: 2000.0  # 8 pairs x ~$250 notional
+  max_notional_per_order: 350.0    # headroom for compounding
+  max_total_exposure_usd: 2500.0  # tracks base_notional
   max_daily_orders: 10
 
 fees:
