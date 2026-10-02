@@ -65,6 +65,7 @@ ALL_PAIRS = [
     ("xyz:NVDA", "xyz:TSM"),
     ("xyz:MU", "xyz:TSM"),
     ("xyz:AAPL", "xyz:AMZN"),
+    ("xyz:EUR", "xyz:GBP"),
 ]
 PAIRS = ALL_PAIRS if PAIR_FILTER == "all" else [
     p for p in ALL_PAIRS if f"{p[0]}/{p[1]}" == PAIR_FILTER
