@@ -107,20 +107,6 @@ def run_cycle(config_path=None, log_path=None):
                     from .state import save_state
                     save_state(pm.state)
                     _log(f"[RECONCILE] Removed stale: {removed}", fh)
-
-                # Reverse reconciliation: find exchange positions not in state
-                state_coins = set()
-                for pos in pm.state.positions:
-                    if pos["status"] == "open":
-                        state_coins.add(pos["coin_a"])
-                        state_coins.add(pos["coin_b"])
-                orphans = live_coins - state_coins
-                if orphans:
-                    _log(
-                        f"[RECONCILE] ORPHANED exchange positions not in "
-                        f"state: {orphans}. Manual review recommended.",
-                        fh,
-                    )
             except Exception as e:
                 _log(f"[RECONCILE] skipped: {e}", fh)
 
@@ -215,7 +201,7 @@ def run_cycle(config_path=None, log_path=None):
         # ---------- 3. Open new positions ----------
         _log("--- Opening new positions ---", fh)
         for pair, sig in signals.items():
-            if sig.action != "OPEN":
+            if sig is None or sig.action != "OPEN":
                 continue
             try:
                 _, ca, cb = aligned_close_prices(

@@ -70,6 +70,8 @@ def _append_row(path: Path, columns: list[str], row: dict) -> None:
 
 
 def log_signal(sig) -> None:
+    if sig is None:
+        return
     """Append one signal to signals.csv (including SKIP decisions)."""
     skip_reason = ""
     if sig.action == "SKIP":

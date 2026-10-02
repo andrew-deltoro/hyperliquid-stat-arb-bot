@@ -232,9 +232,27 @@ def main():
         return
 
     df = pd.DataFrame(results)
-    df = df.sort_values("eg_pval").reset_index(drop=True)
-    df = df[["pair", "coin_a", "coin_b", "eg_pval", "adf_pval",
-             "beta", "corr", "half_life_hours"]]
+
+    # Composite rank_score: weight cointegration strength against
+    # half-life (20-60h sweet spot) and beta proximity to 1.
+    def hl_penalty(hl):
+        if hl is None or not np.isfinite(hl) or hl <= 0:
+            return 100.0
+        if hl < 20:
+            return 5.0 + (20 - hl) / 20
+        if hl <= 60:
+            return 1.0
+        if hl <= 96:
+            return 1.0 + (hl - 60) / 36
+        return 100.0
+
+    df["hl_penalty"] = df["half_life_hours"].apply(hl_penalty)
+    df["beta_penalty"] = (df["beta"] - 1.0).abs() + 1.0
+    df["rank_score"] = (1.0 / df["eg_pval"]) / (df["hl_penalty"] * df["beta_penalty"])
+
+    df = df.sort_values("rank_score", ascending=False).reset_index(drop=True)
+    df = df[["rank_score", "pair", "coin_a", "coin_b", "eg_pval", "adf_pval",
+             "beta", "corr", "half_life_hours", "hl_penalty"]]
     df.insert(0, "scanned_at_utc", pd.Timestamp.utcnow().isoformat())
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
