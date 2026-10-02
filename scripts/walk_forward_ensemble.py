@@ -66,6 +66,11 @@ ALL_PAIRS = [
     ("xyz:MU", "xyz:TSM"),
     ("xyz:AAPL", "xyz:AMZN"),
     ("xyz:EUR", "xyz:GBP"),
+    # Semis cluster expansion (2026-10-02)
+    ("xyz:AMD", "xyz:MU"),
+    ("xyz:AMD", "xyz:TSM"),
+    ("xyz:ASML", "xyz:TSM"),
+    ("xyz:AMAT", "xyz:LRCX"),
 ]
 PAIRS = ALL_PAIRS if PAIR_FILTER == "all" else [
     p for p in ALL_PAIRS if f"{p[0]}/{p[1]}" == PAIR_FILTER
