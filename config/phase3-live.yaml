@@ -10,6 +10,7 @@ pairs:
   - ["xyz:NVDA", "xyz:PLTR"]
   - ["AIXBT", "DOGE"]   # AIXBT batch: n=20, 85% win, CI +0.105
   - ["xyz:MU", "xyz:TSM"]   # HIP-3 semis: n=8, 100% win, CI +2.109
+  - ["xyz:AMD", "xyz:TSM"]   # HIP-3 semis: n=6, 100% win, CI +1.399
   - ["MEME", "TIA"]
   - ["SNX", "TIA"]
   - ["ORDI", "SOL"]
