@@ -56,6 +56,11 @@ ALL_PAIRS = [
     ("SNX", "SUI"),
     ("GMT", "TIA"),
     ("ETC", "NEO"),
+    # Screener v2 candidates (HL 24-33h sweet spot)
+    ("AIXBT", "DOGE"),
+    ("RENDER", "SNX"),
+    ("MOODENG", "YGG"),
+    ("LINEA", "NEO"),
 ]
 PAIRS = ALL_PAIRS if PAIR_FILTER == "all" else [
     p for p in ALL_PAIRS if f"{p[0]}/{p[1]}" == PAIR_FILTER

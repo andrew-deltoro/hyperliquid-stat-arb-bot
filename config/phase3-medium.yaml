@@ -15,6 +15,7 @@ pairs:
   - ["xyz:GOLD", "xyz:SILVER"]
   - ["xyz:NVDA", "xyz:PLTR"]
   - ["LTC", "DOGE"]
+  - ["RENDER", "SNX"]
   - ["ETC", "RSR"]
   - ["MEME", "OP"]
   - ["FET", "IMX"]
