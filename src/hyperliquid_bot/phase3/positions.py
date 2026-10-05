@@ -57,10 +57,14 @@ class PositionManager:
                 live_state = self.executor.info.user_state(
                     self.executor.wallet_address
                 )
+                # Filter out dust: positions under $5 notional don't count
+                # as live exposure, otherwise residuals from partial exits
+                # block re-entry on the same pair.
+                DUST_THRESHOLD_USD = 5.0
                 live_coins = {
                     p["position"]["coin"]
                     for p in live_state.get("assetPositions", [])
-                    if float(p["position"].get("szi", 0)) != 0
+                    if abs(float(p["position"].get("positionValue", 0))) > DUST_THRESHOLD_USD
                 }
                 conflicting = {sig.coin_a, sig.coin_b} & live_coins
                 if conflicting:
