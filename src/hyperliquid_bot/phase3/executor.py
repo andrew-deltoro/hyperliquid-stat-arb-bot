@@ -118,10 +118,10 @@ class LiveExecutor(BaseExecutor):
                 f"(main wallet address) in .env"
             )
 
-        # HIP-3 dexes we trade on (xyz hosts GOLD, SILVER, NVDA, PLTR, MU, TSM, AMD).
-        # Must be passed to both Exchange and Info so the SDK loads the dex
-        # universe and can resolve symbols like "xyz:MU".
-        perp_dexs = ["xyz"]
+        # Include BOTH the main dex (empty string "") and the xyz HIP-3 dex.
+        # Passing perp_dexs=["xyz"] replaces the default and hides all crypto
+        # symbols — must list "" explicitly to keep main-dex symbol resolution.
+        perp_dexs = ["", "xyz"]
 
         self.exchange = Exchange(
             account, self.base_url, account_address=self.wallet_address,
