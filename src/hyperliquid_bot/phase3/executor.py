@@ -255,7 +255,12 @@ class LiveExecutor(BaseExecutor):
         prefer_maker = bool(ex_cfg.get("prefer_maker", False))
         maker_timeout = int(ex_cfg.get("maker_timeout_sec", 30))
 
-        if prefer_maker:
+        # HIP-3 pairs (xyz:*) have thin books — maker orders rest for
+        # minutes without filling, causing phantom "OPENED" logs. Force
+        # taker for them so orders fill immediately and unwind logic works.
+        skip_maker = order.coin.startswith("xyz:")
+
+        if prefer_maker and not skip_maker:
             maker_fill = self._try_maker(order, rounded_size, maker_timeout)
             if maker_fill is not None:
                 self.safeguards.increment_daily_order_count()
@@ -313,7 +318,9 @@ class LiveExecutor(BaseExecutor):
                             if sz < rounded_size * 0.95:
                                 is_partial = True
                         elif "resting" in first:
-                            order_status = "filled"
+                            # Resting = order on book, not filled. Mark as
+                            # partial so caller knows to handle unwind.
+                            order_status = "resting"
                             oid = str(first["resting"].get("oid", ""))
                             try:
                                 sz = float(first["resting"].get("sz", rounded_size))
