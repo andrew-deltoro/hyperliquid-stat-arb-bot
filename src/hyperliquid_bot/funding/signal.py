@@ -36,11 +36,29 @@ def _resolve_db_path() -> Path:
 DB_FILE = _resolve_db_path()
 OUT_FILE = Path("/home/hlbot/hyperliquid-stat-arb-bot/state/funding_candidates.json")
 
-# HL-native funding candidates: must have BOTH spot and perp on HL
-HL_NATIVE_WHITELIST = [
-    "PURR", "TRUMP", "PUMP", "HYPE", "BERA", "MON", "STABLE", "AZTEC",
-    # Add more as we discover them
-]
+# Cache of coins that have a USDC spot pair on HL. Filled lazily on first use.
+_USDC_PAIRS_CACHE = None
+
+
+def _coins_with_usdc_spot() -> set[str]:
+    """Query HL spot meta; return set of base coins with a */USDC pair."""
+    global _USDC_PAIRS_CACHE
+    if _USDC_PAIRS_CACHE is not None:
+        return _USDC_PAIRS_CACHE
+
+    from hyperliquid.info import Info
+    from hyperliquid.utils import constants
+
+    info = Info(constants.MAINNET_API_URL, skip_ws=True)
+    spot_meta = info.spot_meta()
+    coins = set()
+    for pair in spot_meta.get("universe", []):
+        name = pair.get("name", "")
+        if name.endswith("/USDC"):
+            base = name[: -len("/USDC")]
+            coins.add(base)
+    _USDC_PAIRS_CACHE = coins
+    return coins
 
 # Signal thresholds
 MIN_AVG_FUNDING_PCT = 20.0       # annualized
@@ -82,8 +100,8 @@ def load_candidates(window_hours: int = 24) -> list[dict]:
         coin, n, avg_ann, min_ann, max_ann, avg_oi, avg_vol, n_high = row
         persistence = n_high / n if n > 0 else 0.0
 
-        # Only keep HL-native whitelisted candidates
-        if coin not in HL_NATIVE_WHITELIST:
+        # Only keep coins that actually have a USDC spot pair on HL
+        if coin not in _coins_with_usdc_spot():
             continue
 
         # Apply filters
