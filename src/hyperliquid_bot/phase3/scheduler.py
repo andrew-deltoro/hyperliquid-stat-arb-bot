@@ -89,12 +89,29 @@ def run_cycle(config_path=None, log_path=None):
         # positions that no longer exist on the exchange.
         if executor is not None and hasattr(executor, "info"):
             try:
-                live_state = executor.info.user_state(executor.wallet_address)
-                live_coins = {
-                    p["position"]["coin"]
-                    for p in live_state.get("assetPositions", [])
-                    if float(p["position"].get("szi", 0)) != 0
-                }
+                # Query both dexes — HIP-3 pairs live on the xyz dex and
+                # won't appear in the default user_state() response.
+                live_coins = set()
+                try:
+                    live_state_main = executor.info.user_state(executor.wallet_address)
+                    live_coins |= {
+                        p["position"]["coin"]
+                        for p in live_state_main.get("assetPositions", [])
+                        if float(p["position"].get("szi", 0)) != 0
+                    }
+                except Exception:
+                    pass
+                try:
+                    live_state_xyz = executor.info.user_state(
+                        executor.wallet_address, dex="xyz"
+                    )
+                    live_coins |= {
+                        p["position"]["coin"]
+                        for p in live_state_xyz.get("assetPositions", [])
+                        if float(p["position"].get("szi", 0)) != 0
+                    }
+                except Exception:
+                    pass
                 removed = []
                 for pos in pm.state.positions:
                     if pos["status"] != "open":

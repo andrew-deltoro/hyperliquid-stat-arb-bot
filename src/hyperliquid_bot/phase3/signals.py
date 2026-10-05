@@ -161,7 +161,7 @@ def generate_signal(
     # natural HL (98-120h). Overrides let us trade them without loosening
     # the crypto filter.
     overrides = cfg.signal.get("half_life_overrides", {}) or {}
-    pair_key = f"{a}/{b}"
+    pair_key = pair  # defined above as f"{coin_a}/{coin_b}"
     hl_max = float(overrides.get(pair_key, cfg.signal.get("half_life_max_hours", 999999)))
     half_life_rejected = ou.half_life_bars > hl_max
 
