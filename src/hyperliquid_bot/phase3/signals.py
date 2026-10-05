@@ -155,7 +155,14 @@ def generate_signal(
 
     # Half-life filter: reject slow-reverting pairs (validated: HL>96h net-negative)
     # Flag-based instead of None-return to avoid downstream None propagation.
-    hl_max = float(cfg.signal.get("half_life_max_hours", 999999))
+    # Per-pair overrides: HIP-3 pairs (semis, metals) revert slower than
+    # crypto pairs. The 96h global filter was validated on crypto only.
+    # Walk-forward on HIP-3 pairs had no HL filter — wins occurred at
+    # natural HL (98-120h). Overrides let us trade them without loosening
+    # the crypto filter.
+    overrides = cfg.signal.get("half_life_overrides", {}) or {}
+    pair_key = f"{a}/{b}"
+    hl_max = float(overrides.get(pair_key, cfg.signal.get("half_life_max_hours", 999999)))
     half_life_rejected = ou.half_life_bars > hl_max
 
     edge = p_revert - 0.5
