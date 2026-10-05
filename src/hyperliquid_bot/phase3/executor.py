@@ -118,10 +118,16 @@ class LiveExecutor(BaseExecutor):
                 f"(main wallet address) in .env"
             )
 
+        # HIP-3 dexes we trade on (xyz hosts GOLD, SILVER, NVDA, PLTR, MU, TSM, AMD).
+        # Must be passed to both Exchange and Info so the SDK loads the dex
+        # universe and can resolve symbols like "xyz:MU".
+        perp_dexs = ["xyz"]
+
         self.exchange = Exchange(
             account, self.base_url, account_address=self.wallet_address,
+            perp_dexs=perp_dexs,
         )
-        self.info = Info(self.base_url, skip_ws=True)
+        self.info = Info(self.base_url, skip_ws=True, perp_dexs=perp_dexs)
 
         # --- Safeguards ---
         sg = cfg.raw.get("safeguards", {})
