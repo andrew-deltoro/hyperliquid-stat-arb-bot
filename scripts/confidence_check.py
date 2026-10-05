@@ -163,22 +163,30 @@ def main():
         if ref and ref["beta_entry"] and ref["half_life_hours"]:
             beta_drift = abs(current_beta - ref["beta_entry"]) / abs(ref["beta_entry"])
             hl_drift = current_hl / ref["half_life_hours"] if ref["half_life_hours"] > 0 else 999
+            status = classify(eg_p, beta_drift, hl_drift)
+            verified = True
         else:
-            beta_drift = 0.0
-            hl_drift = 1.0
-
-        status = classify(eg_p, beta_drift, hl_drift)
+            # No live entry reference — we cannot compute drift, and eg_p
+            # alone is too conservative to flag. Mark unverified.
+            beta_drift = None
+            hl_drift = None
+            status = "unverified"
+            verified = False
         results[pair] = {
             "status": status,
+            "verified": verified,
             "eg_p": round(eg_p, 4),
             "beta_current": round(current_beta, 4),
             "beta_entry_ref": round(ref["beta_entry"], 4) if ref and ref.get("beta_entry") else None,
-            "beta_drift": round(beta_drift, 4),
+            "beta_drift": round(beta_drift, 4) if beta_drift is not None else None,
             "current_hl": round(current_hl, 2),
             "entry_hl_ref": round(ref["half_life_hours"], 2) if ref and ref.get("half_life_hours") else None,
-            "hl_drift": round(hl_drift, 3),
+            "hl_drift": round(hl_drift, 3) if hl_drift is not None else None,
         }
-        print(f"  status={status:>7}  eg_p={eg_p:.3f}  beta={current_beta:.3f}  drift={beta_drift:.2%}  hl={current_hl:.1f}h  hl_drift={hl_drift:.2f}x", flush=True)
+        if verified:
+            print(f"  status={status:>7}  eg_p={eg_p:.3f}  beta={current_beta:.3f}  drift={beta_drift:.2%}  hl={current_hl:.1f}h  hl_drift={hl_drift:.2f}x", flush=True)
+        else:
+            print(f"  status={status:>7}  eg_p={eg_p:.3f}  beta={current_beta:.3f}  hl={current_hl:.1f}h  (no live reference)", flush=True)
 
     out = {
         "last_run": datetime.now(timezone.utc).isoformat(),
