@@ -79,9 +79,23 @@ class PositionScaler:
             if not wallet:
                 raise RuntimeError(f"{acct_env} not set")
 
+            # Query main dex + any HIP-3 dexes separately; HL keeps
+            # margin pools isolated per dex. Sum everything to get
+            # the true tradeable balance.
             state = info.user_state(wallet)
             margin = state.get("marginSummary", {})
             balance = float(margin.get("accountValue", 0))
+
+            # Add HIP-3 dex balances (xyz specifically, extensible)
+            for dex in ["xyz"]:
+                try:
+                    dx_state = info.user_state(wallet, dex=dex)
+                    dx_margin = dx_state.get("marginSummary", {})
+                    dx_balance = float(dx_margin.get("accountValue", 0))
+                    if dx_balance > 0:
+                        balance += dx_balance
+                except Exception:
+                    pass
 
             # Unified-mode fallback
             if balance < 1:
