@@ -34,7 +34,14 @@ model:
 
 signal:
   z_entry_min: 1.0
-  half_life_max_hours: 96   # validated: HL>96h is net-negative (mean -0.47%)    # validated at z=1.0: n=19, CI=[-0.098,+1.250] (4.2x tighter than z=1.5)
+  half_life_max_hours: 96
+  half_life_overrides:
+    # HIP-3 pairs have naturally longer half-lives (stock/semis dynamics)
+    # than crypto pairs. Override the 96h global filter for them.
+    "xyz:MU/xyz:TSM": 200
+    "xyz:AMD/xyz:TSM": 200
+    "xyz:NVDA/xyz:PLTR": 200
+    "xyz:GOLD/xyz:SILVER": 150   # validated: HL>96h is net-negative (mean -0.47%)    # validated at z=1.0: n=19, CI=[-0.098,+1.250] (4.2x tighter than z=1.5)
   edge_min: 0.05
   max_btc_vol: 0.55    # skip entries above this annualized BTC vol
 
