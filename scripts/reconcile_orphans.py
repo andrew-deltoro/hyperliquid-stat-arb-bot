@@ -12,6 +12,10 @@ import numpy as np
 import yaml
 from dotenv import load_dotenv
 
+# Match the systemd service env so STATE_DIR resolves to the runtime dir
+import os as _os
+_os.environ.setdefault("HLBOT_RUNTIME_DIR", "/home/hlbot/hlbot-runtime/live")
+
 sys.path.insert(0, "/home/hlbot/hyperliquid-stat-arb-bot")
 load_dotenv("/home/hlbot/hyperliquid-stat-arb-bot/.env")
 
