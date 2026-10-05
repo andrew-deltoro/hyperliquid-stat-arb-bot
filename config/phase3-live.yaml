@@ -2,7 +2,7 @@
 # Scale by editing the safeguards block only.
 
 pairs:
-  - ["ETH", "BTC"]
+  # - ["ETH", "BTC"]   # PAUSED 2026-10-05: 32% beta drift per confidence check
   - ["SOL", "AVAX"]
   - ["AAVE", "COMP"]
   - ["SNX", "DYDX"]
