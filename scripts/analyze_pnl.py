@@ -81,9 +81,12 @@ def main():
     print()
 
     if closed:
-        wins = [p for p in closed if (p.get("pnl_usd") or 0) > 0]
-        losses = [p for p in closed if (p.get("pnl_usd") or 0) < 0]
-        win_rate = 100 * len(wins) / len(closed)
+        # Filter out zero-PnL artifacts (state_reconciled, manual_flatten)
+        real = [p for p in closed if (p.get("pnl_usd") or 0) != 0]
+        wins = [p for p in real if (p.get("pnl_usd") or 0) > 0]
+        losses = [p for p in real if (p.get("pnl_usd") or 0) < 0]
+        win_rate = 100 * len(wins) / len(real) if real else 0
+        closed = real  # downstream stats use real only
         avg_win = sum((p.get("pnl_usd") or 0) for p in wins) / len(wins) if wins else 0
         avg_loss = sum((p.get("pnl_usd") or 0) for p in losses) / len(losses) if losses else 0
         ratio = abs(avg_win / avg_loss) if avg_loss else 0
