@@ -1,29 +1,39 @@
-# Phase 3 LIVE config — mainnet execution with tiny safeguards
-# Scale by editing the safeguards block only.
-
 pairs:
-  # - ["ETH", "BTC"]   # PAUSED 2026-10-05: 32% beta drift per confidence check
-  - ["SOL", "AVAX"]
-  - ["AAVE", "COMP"]
-  - ["SNX", "DYDX"]
-  - ["xyz:GOLD", "xyz:SILVER"]
-  - ["xyz:NVDA", "xyz:PLTR"]
-  - ["AIXBT", "DOGE"]   # AIXBT batch: n=20, 85% win, CI +0.105
-  - ["xyz:MU", "xyz:TSM"]   # HIP-3 semis: n=8, 100% win, CI +2.109
-  - ["xyz:AMD", "xyz:TSM"]   # HIP-3 semis: n=6, 100% win, CI +1.399
-  - ["MEME", "TIA"]
-  - ["SNX", "TIA"]
-  - ["ORDI", "SOL"]
-  - ["SNX", "SUI"]
-  - ["GMT", "MEME"]
-  - ["ETC", "NEO"]
-  - ["LTC", "DOGE"]
-  - ["ETH", "SOL"]
-
+- - SOL
+  - AVAX
+- - AAVE
+  - COMP
+- - SNX
+  - DYDX
+- - xyz:GOLD
+  - xyz:SILVER
+- - xyz:NVDA
+  - xyz:PLTR
+- - AIXBT
+  - DOGE
+- - xyz:MU
+  - xyz:TSM
+- - xyz:AMD
+  - xyz:TSM
+- - MEME
+  - TIA
+- - SNX
+  - TIA
+- - ORDI
+  - SOL
+- - SNX
+  - SUI
+- - GMT
+  - MEME
+- - ETC
+  - NEO
+- - LTC
+  - DOGE
+- - ETH
+  - SOL
 data:
-  interval: "1h"
+  interval: 1h
   lookback_hours: 720
-
 model:
   coint_draws: 2000
   coint_tune: 2000
@@ -31,67 +41,58 @@ model:
   ou_tune: 2000
   chains: 4
   cores: 4
-
 signal:
   z_entry_min: 1.0
   half_life_max_hours: 96
   half_life_overrides:
-    # HIP-3 pairs have naturally longer half-lives (stock/semis dynamics)
-    # than crypto pairs. Override the 96h global filter for them.
-    "xyz:MU/xyz:TSM": 200
-    "xyz:AMD/xyz:TSM": 200
-    "xyz:NVDA/xyz:PLTR": 200
-    "xyz:GOLD/xyz:SILVER": 150   # validated: HL>96h is net-negative (mean -0.47%)    # validated at z=1.0: n=19, CI=[-0.098,+1.250] (4.2x tighter than z=1.5)
+    xyz:MU/xyz:TSM: 200
+    xyz:AMD/xyz:TSM: 200
+    xyz:NVDA/xyz:PLTR: 200
+    xyz:GOLD/xyz:SILVER: 150
   edge_min: 0.05
-  max_btc_vol: 0.55    # skip entries above this annualized BTC vol
-
+  max_btc_vol: 0.55
+  z_entry_min_wide: 1.2
+  z_entry_min_tight: 0.9
 position:
-  base_notional: 2500.0       # +25% sizing (graduation level 1.25x)
-  baseline_balance: 3105.0    # matches actual account; scale=1.0
+  base_notional: 2500.0
+  baseline_balance: 3105.0
   compounding_enabled: true
   scale_safeguards: true
-  target_frac: 0.75    # validated: 68pct Sharpe improvement over 0.5 (n=168)
+  target_frac: 0.75
   use_trailing_stop: true
-  exit_mode: "cross"          # "trail" (old) or "cross" (new)
-  cross_exit_frac: 0.75        # exit when opposite-side reaches this x |entry|     # validated: +38% mean PnL vs fixed 0.75
-  trail_frac: 0.25            # trail width as fraction of entry magnitude
-  trail_activation_frac: 0.50 # activate trail at 50% reversion
-  exit_horizon_mult: 3.33   # 120h hold (matches validated experiment)
+  exit_mode: cross
+  cross_exit_frac: 0.75
+  trail_frac: 0.25
+  trail_activation_frac: 0.5
+  exit_horizon_mult: 3.33
   stop_mult: 3.0
-  beta_shift_max: 0.20
-
-
+  beta_shift_max: 0.2
 risk:
   max_concurrent_positions: 10
-  max_total_notional: 2000.0   # allows 10 pairs at current sizing
+  max_total_notional: 2000.0
   cluster_caps:
     btc_eth: 250.0
     alt_l1: 300.0
     defi: 300.0
     oracle: 200.0
     meme: 150.0
-
 executor:
-  mode: "live"
-  private_key_env: "HL_PRIVATE_KEY_MAINNET"
-  account_address_env: "HL_ACCOUNT_ADDRESS_MAINNET"
-  network: "mainnet"
-  slippage_tolerance: 0.01          # 1% tighter than testnet
-  prefer_maker: true              # try post-only limit first
-  maker_timeout_sec: 30           # wait this long before falling back to market
-
-
+  mode: live
+  private_key_env: HL_PRIVATE_KEY_MAINNET
+  account_address_env: HL_ACCOUNT_ADDRESS_MAINNET
+  network: mainnet
+  slippage_tolerance: 0.01
+  prefer_maker: true
+  maker_timeout_sec: 30
 safeguards:
-  max_notional_per_order: 350.0    # headroom for compounding
-  max_total_exposure_usd: 2500.0  # tracks base_notional
+  max_notional_per_order: 350.0
+  max_total_exposure_usd: 2500.0
   max_daily_orders: 10
-
 fees:
   taker_fee_pct: 0.00045
   maker_fee_pct: 0.00015
   default_fee_pct: 0.00045
   slippage_bps: 3
-
 ou_prior:
   kappa_pop: 0.0115
-  kappa_pop_sd: 0.0040
+  kappa_pop_sd: 0.004

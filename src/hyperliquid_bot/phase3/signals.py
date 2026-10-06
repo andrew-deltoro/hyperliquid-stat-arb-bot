@@ -187,7 +187,13 @@ def generate_signal(
         notional = 0.0
 
     # Entry decision
-    enough_z = abs(z) >= cfg.signal["z_entry_min"]
+    # Asymmetric z thresholds: tight side (z < 0) showed stronger edge
+    # (walk-forward n=445: tight CI lower +0.045 vs wide -0.009).
+    # Wide side stricter, tight side looser.
+    z_thresh_wide = float(cfg.signal.get("z_entry_min_wide", cfg.signal.get("z_entry_min", 1.0)))
+    z_thresh_tight = float(cfg.signal.get("z_entry_min_tight", cfg.signal.get("z_entry_min", 1.0)))
+    threshold = z_thresh_wide if z > 0 else z_thresh_tight
+    enough_z = abs(z) >= threshold
     enough_edge = edge >= cfg.signal["edge_min"]
     models_ok = coint.converged and ou.converged
 
