@@ -53,6 +53,9 @@ signal:
   max_btc_vol: 0.55
   z_entry_min_wide: 1.2
   z_entry_min_tight: 0.9
+  kalman_enabled: true
+  kalman_q: 1.0e-05
+  kalman_r: 0.0001
 position:
   base_notional: 2500.0
   baseline_balance: 3105.0
