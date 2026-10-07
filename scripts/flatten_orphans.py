@@ -16,7 +16,18 @@ import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+
+from dotenv import load_dotenv
+# Prefer the live checkout's .env when this script is run from a worktree.
+for candidate in (
+    Path("/home/hlbot/hyperliquid-stat-arb-bot/.env"),
+    REPO / ".env",
+):
+    if candidate.exists():
+        load_dotenv(candidate, override=False)
+        break
 
 from src.hyperliquid_bot.phase3.config import load_config
 from src.hyperliquid_bot.phase3.executor import LiveExecutor, Order
