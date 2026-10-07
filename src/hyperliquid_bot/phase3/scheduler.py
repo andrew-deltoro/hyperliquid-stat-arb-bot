@@ -85,48 +85,10 @@ def run_cycle(config_path=None, log_path=None):
 
         pm = PositionManager(cfg, executor=executor, log_fn=_dual_log)
 
-        # Reconcile state with exchange reality: close state entries for
-        # positions that no longer exist on the exchange.
-        if executor is not None and hasattr(executor, "info"):
-            try:
-                # Query both dexes — HIP-3 pairs live on the xyz dex and
-                # won't appear in the default user_state() response.
-                live_coins = set()
-                try:
-                    live_state_main = executor.info.user_state(executor.wallet_address)
-                    live_coins |= {
-                        p["position"]["coin"]
-                        for p in live_state_main.get("assetPositions", [])
-                        if float(p["position"].get("szi", 0)) != 0
-                    }
-                except Exception:
-                    pass
-                try:
-                    live_state_xyz = executor.info.user_state(
-                        executor.wallet_address, dex="xyz"
-                    )
-                    live_coins |= {
-                        p["position"]["coin"]
-                        for p in live_state_xyz.get("assetPositions", [])
-                        if float(p["position"].get("szi", 0)) != 0
-                    }
-                except Exception:
-                    pass
-                removed = []
-                for pos in pm.state.positions:
-                    if pos["status"] != "open":
-                        continue
-                    if pos["coin_a"] not in live_coins and pos["coin_b"] not in live_coins:
-                        pos["status"] = "closed"
-                        pos["exit_reason"] = "state_reconciled"
-                        removed.append(pos["pair"])
-                if removed:
-                    from .state import save_state
-                    save_state(pm.state)
-                    _log(f"[RECONCILE] Removed stale: {removed}", fh)
-            except Exception as e:
-                _log(f"[RECONCILE] skipped: {e}", fh)
-
+        exchange_ok = pm.reconcile()
+        for rev in pm.needs_review():
+            _log(f"[REVIEW] {rev['pair']}: {rev.get('review_reason', '')} "
+                 f"— entries on {rev['coin_a']}/{rev['coin_b']} blocked", fh)
 
         _log(f"Open positions before cycle: {pm.open_count()}", fh)
 
@@ -208,6 +170,9 @@ def run_cycle(config_path=None, log_path=None):
                 _log(f"[{pair}] ✅ CLOSED: {result['reason']} "
                      f"(exit spread={result['position']['exit_spread']:+.5f})",
                      fh)
+            elif result["action"] == "close_failed":
+                _log(f"[{pair}] ⚠ CLOSE FAILED ({result['reason']}): "
+                     f"{result.get('error', '')}", fh)
             elif result["action"] == "hold":
                 _log(f"[{pair}] holding: "
                      f"spread={result['current_centered_spread']:+.5f} "
@@ -217,6 +182,9 @@ def run_cycle(config_path=None, log_path=None):
 
         # ---------- 3. Open new positions ----------
         _log("--- Opening new positions ---", fh)
+        if not exchange_ok:
+            _log("Skipping entries: exchange position state unavailable", fh)
+            signals = {}
         for pair, sig in signals.items():
             if sig is None or sig.action != "OPEN":
                 continue

@@ -6,6 +6,9 @@ Limits (configurable via phase3.yaml):
   - MAX_TOTAL_EXPOSURE_USD:  $100  across all open positions
   - MAX_DAILY_ORDERS:        20    per UTC day
   - KILL_SWITCH_FILE:        KILL  if this file exists, refuse all orders
+                                   except reduce-only closes
+
+Reduce-only orders bypass every limit so positions can always be closed.
 """
 from __future__ import annotations
 
@@ -85,12 +88,21 @@ class Safeguards:
     def check_order(
         self,
         order_notional_usd: float,
-        current_total_notional: float,
+        current_total_notional: float | None,
+        reduce_only: bool = False,
     ) -> SafeguardResult:
+        # Reduce-only orders can only shrink exposure, so none of the caps
+        # (including the kill switch) may block them.
+        if reduce_only:
+            return SafeguardResult(True, "reduce_only")
+
         if self.kill_switch_active():
             return SafeguardResult(
                 False, f"KILL switch active ({self.kill_switch_path})"
             )
+
+        if current_total_notional is None:
+            return SafeguardResult(False, "current exposure unknown")
 
         if order_notional_usd > self.max_notional_per_order:
             return SafeguardResult(

@@ -6,14 +6,13 @@ The API wallet's private key signs; the main wallet is the account_address.
 """
 from __future__ import annotations
 
+import math
 import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 
 from .testnet_safeguards import Safeguards
-from .paths import STATE_DIR
 
 
 @dataclass
@@ -23,6 +22,7 @@ class Order:
     size: float
     notional_usd: float
     tag: str
+    reduce_only: bool = False
 
 
 @dataclass
@@ -35,17 +35,40 @@ class Fill:
     tag: str
     timestamp_iso: str
     simulated: bool
-    status: str = "filled"      # "filled", "rejected", "error"
+    status: str = "filled"      # "filled", "partial", "none", "rejected", "error", "unknown"
     order_id: str = ""
     error: str = ""
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _dex_of(coin: str) -> str:
+    return coin.split(":", 1)[0] if ":" in coin else ""
+
+
 class BaseExecutor:
+    # True when get_position() reflects real exchange state and callers
+    # should measure position changes instead of trusting fills.
+    verifies_positions = False
+
     def __init__(self, cfg):
         self.cfg = cfg
 
     def place_order(self, order: Order, ref_price: float) -> Fill:
         raise NotImplementedError
+
+    def get_position(self, coin: str) -> float | None:
+        """Signed position size on the exchange, or None if unknown."""
+        return None
+
+    def all_positions(self) -> dict[str, float] | None:
+        """Non-zero signed positions across all traded dexes, or None if unknown."""
+        return None
+
+    def lot_size(self, coin: str) -> float:
+        return 0.0
 
 
 class DryRunExecutor(BaseExecutor):
@@ -58,13 +81,14 @@ class DryRunExecutor(BaseExecutor):
             coin=order.coin, side=order.side, size=order.size,
             price=ref_price, notional_usd=order.notional_usd,
             tag=order.tag,
-            timestamp_iso=datetime.now(timezone.utc).isoformat(),
+            timestamp_iso=_now_iso(),
             simulated=True, status="filled",
         )
         self.log_fn(
             f"[DRY-RUN] {fill.side.upper():4s} {fill.size:.6f} "
             f"{fill.coin:6s} @ {fill.price:.6f}  "
             f"(≈${fill.notional_usd:.2f})  tag={fill.tag}"
+            f"{'  reduce_only' if order.reduce_only else ''}"
         )
         return fill
 
@@ -72,10 +96,47 @@ class DryRunExecutor(BaseExecutor):
 class LiveExecutor(BaseExecutor):
     """Real Hyperliquid testnet/mainnet order placement with safeguards."""
 
-    def __init__(self, cfg, log_fn=print):
+    verifies_positions = True
+    # Main dex ("") plus the xyz HIP-3 dex. Passing perp_dexs=["xyz"] alone
+    # would hide all main-dex symbols, so "" must be listed explicitly.
+    PERP_DEXS = ["", "xyz"]
+
+    def __init__(self, cfg, log_fn=print, exchange=None, info=None,
+                 wallet_address: str | None = None):
         super().__init__(cfg)
         self.log_fn = log_fn
 
+        ex_cfg = cfg.raw.get("executor", {})
+        self.network = ex_cfg.get("network", "testnet")
+
+        if exchange is not None and info is not None:
+            self.exchange = exchange
+            self.info = info
+            self.wallet_address = wallet_address or ""
+            self.api_wallet_address = ""
+        else:
+            self._init_sdk(ex_cfg)
+
+        sg = cfg.raw.get("safeguards", {})
+        self.safeguards = Safeguards(
+            max_notional_per_order=float(sg.get("max_notional_per_order", 50.0)),
+            max_total_exposure_usd=float(sg.get("max_total_exposure_usd", 100.0)),
+            max_daily_orders=int(sg.get("max_daily_orders", 20)),
+        )
+
+        self.log_fn(
+            f"[LIVE-EXECUTOR] network={self.network} "
+            f"api_wallet={self.api_wallet_address[:10]}... "
+            f"account={self.wallet_address[:10]}... "
+            f"safeguards: max_order=${sg.get('max_notional_per_order', 50)}, "
+            f"max_exposure=${sg.get('max_total_exposure_usd', 100)}, "
+            f"max_daily={sg.get('max_daily_orders', 20)}"
+        )
+
+        if exchange is None:
+            self._log_account_value()
+
+    def _init_sdk(self, ex_cfg: dict) -> None:
         try:
             from hyperliquid.exchange import Exchange
             from hyperliquid.info import Info
@@ -87,26 +148,19 @@ class LiveExecutor(BaseExecutor):
                 f"eth-account: {e}"
             ) from e
 
-        # --- Load executor config ---
-        ex_cfg = cfg.raw.get("executor", {})
-        network = ex_cfg.get("network", "testnet")
-        self.network = network
-        self.base_url = (
+        base_url = (
             constants.TESTNET_API_URL
-            if network == "testnet"
+            if self.network == "testnet"
             else constants.MAINNET_API_URL
         )
 
-        # --- Load API wallet private key ---
         pk_env = ex_cfg.get("private_key_env", "HL_PRIVATE_KEY")
-        self.private_key = os.getenv(pk_env)
-        if not self.private_key:
+        private_key = os.getenv(pk_env)
+        if not private_key:
             raise RuntimeError(
                 f"Live executor requires env var {pk_env} in .env"
             )
-
-        # --- Init SDK clients ---
-        account = Account.from_key(self.private_key)
+        account = Account.from_key(private_key)
         self.api_wallet_address = account.address
 
         # API wallet trades on behalf of the main wallet.
@@ -118,35 +172,13 @@ class LiveExecutor(BaseExecutor):
                 f"(main wallet address) in .env"
             )
 
-        # Include BOTH the main dex (empty string "") and the xyz HIP-3 dex.
-        # Passing perp_dexs=["xyz"] replaces the default and hides all crypto
-        # symbols — must list "" explicitly to keep main-dex symbol resolution.
-        perp_dexs = ["", "xyz"]
-
         self.exchange = Exchange(
-            account, self.base_url, account_address=self.wallet_address,
-            perp_dexs=perp_dexs,
+            account, base_url, account_address=self.wallet_address,
+            perp_dexs=self.PERP_DEXS,
         )
-        self.info = Info(self.base_url, skip_ws=True, perp_dexs=perp_dexs)
+        self.info = Info(base_url, skip_ws=True, perp_dexs=self.PERP_DEXS)
 
-        # --- Safeguards ---
-        sg = cfg.raw.get("safeguards", {})
-        self.safeguards = Safeguards(
-            max_notional_per_order=float(sg.get("max_notional_per_order", 50.0)),
-            max_total_exposure_usd=float(sg.get("max_total_exposure_usd", 100.0)),
-            max_daily_orders=int(sg.get("max_daily_orders", 20)),
-        )
-
-        self.log_fn(
-            f"[LIVE-EXECUTOR] network={network} "
-            f"api_wallet={self.api_wallet_address[:10]}... "
-            f"account={self.wallet_address[:10]}... "
-            f"safeguards: max_order=${sg.get('max_notional_per_order', 50)}, "
-            f"max_exposure=${sg.get('max_total_exposure_usd', 100)}, "
-            f"max_daily={sg.get('max_daily_orders', 20)}"
-        )
-
-        # --- Verify account has funds ---
+    def _log_account_value(self) -> None:
         try:
             user_state = self.info.user_state(self.wallet_address)
             margin = user_state.get("marginSummary", {})
@@ -167,210 +199,227 @@ class LiveExecutor(BaseExecutor):
             if account_value < 10:
                 self.log_fn(
                     f"[LIVE-EXECUTOR] WARNING: account value "
-                    f"${account_value:.2f} is low. Visit "
-                    f"https://app.hyperliquid-testnet.xyz/drip"
+                    f"${account_value:.2f} is low."
                 )
         except Exception as e:
             self.log_fn(f"[LIVE-EXECUTOR] could not fetch account state: {e}")
 
-    def _current_total_notional(self) -> float:
-        """
-        Total notional exposure across ALL open positions on the account,
-        queried live from the exchange. Falls back to state file if the
-        API call fails.
-        """
-        # Try live query first
+    # ---------------- exchange state ----------------
+    def _user_state(self, dex: str):
+        if dex:
+            return self.info.user_state(self.wallet_address, dex)
+        return self.info.user_state(self.wallet_address)
+
+    def get_position(self, coin: str) -> float | None:
         try:
-            state = self.info.user_state(self.wallet_address)
-            total = 0.0
+            state = self._user_state(_dex_of(coin))
+        except Exception as e:
+            self.log_fn(f"[LIVE-EXECUTOR] position query failed for {coin}: {e}")
+            return None
+        for p in state.get("assetPositions", []):
+            pos = p.get("position", {})
+            if pos.get("coin") == coin:
+                return float(pos.get("szi", 0))
+        return 0.0
+
+    def all_positions(self) -> dict[str, float] | None:
+        out: dict[str, float] = {}
+        for dex in self.PERP_DEXS:
+            try:
+                state = self._user_state(dex)
+            except Exception as e:
+                self.log_fn(f"[LIVE-EXECUTOR] position query failed (dex={dex!r}): {e}")
+                return None
             for p in state.get("assetPositions", []):
                 pos = p.get("position", {})
                 szi = float(pos.get("szi", 0))
-                val = abs(float(pos.get("positionValue", 0)))
-                if szi != 0 and val > 0:
-                    total += val
-            if total > 0:
-                return total
-            return 0.0
-        except Exception as e:
-            self.log_fn(f"[LIVE-EXECUTOR] live exposure check failed: {e}")
+                if szi != 0:
+                    out[pos["coin"]] = szi
+        return out
 
-        # Fallback to state file
-        import json
-        state_path = STATE_DIR / "positions.json"
-        if not state_path.exists():
+    def _current_total_notional(self) -> float | None:
+        """Gross position value across all traded dexes, or None if unknown."""
+        total = 0.0
+        for dex in self.PERP_DEXS:
+            try:
+                state = self._user_state(dex)
+            except Exception as e:
+                self.log_fn(f"[LIVE-EXECUTOR] live exposure check failed (dex={dex!r}): {e}")
+                return None
+            for p in state.get("assetPositions", []):
+                pos = p.get("position", {})
+                if float(pos.get("szi", 0)) != 0:
+                    total += abs(float(pos.get("positionValue", 0)))
+        return total
+
+    def _sz_decimals(self, coin: str) -> int:
+        asset = self.info.coin_to_asset.get(coin)
+        if asset is None:
+            raise ValueError(f"unknown asset {coin}: no size precision available")
+        return int(self.info.asset_to_sz_decimals[asset])
+
+    def lot_size(self, coin: str) -> float:
+        try:
+            return 10.0 ** -self._sz_decimals(coin)
+        except Exception:
             return 0.0
-        with open(state_path) as f:
-            data = json.load(f)
-        return sum(
-            p.get("notional_usd", 0.0)
-            for p in data.get("positions", [])
-            if p.get("status") == "open"
+
+    @staticmethod
+    def _round_down(size: float, decimals: int) -> float:
+        scale = 10 ** decimals
+        return round(math.floor(size * scale + 1e-9) / scale, decimals)
+
+    def _fill(self, order: Order, price: float, size: float, status: str,
+              oid: str = "", error: str = "") -> Fill:
+        return Fill(
+            coin=order.coin, side=order.side, size=size, price=price,
+            notional_usd=order.notional_usd, tag=order.tag,
+            timestamp_iso=_now_iso(), simulated=False,
+            status=status, order_id=oid, error=error,
         )
 
-
+    # ---------------- order placement ----------------
     def place_order(self, order: Order, ref_price: float) -> Fill:
-        # --- Safeguards ---
+        current = None if order.reduce_only else self._current_total_notional()
         check = self.safeguards.check_order(
             order_notional_usd=order.notional_usd,
-            current_total_notional=self._current_total_notional(),
+            current_total_notional=current,
+            reduce_only=order.reduce_only,
         )
         if not check.allowed:
             self.log_fn(f"[LIVE-EXECUTOR] REJECTED: {check.reason}")
-            return Fill(
-                coin=order.coin, side=order.side, size=order.size,
-                price=ref_price, notional_usd=order.notional_usd,
-                tag=order.tag,
-                timestamp_iso=datetime.now(timezone.utc).isoformat(),
-                simulated=False, status="rejected", error=check.reason,
-            )
+            return self._fill(order, ref_price, 0.0, "rejected", error=check.reason)
 
-        # --- Round size to exchange precision ---
         try:
-            meta = self.info.meta()
-            sz_decimals = None
-            for asset in meta.get("universe", []):
-                if asset.get("name") == order.coin:
-                    sz_decimals = int(asset.get("szDecimals", 0))
-                    break
-            if sz_decimals is None:
-                sz_decimals = 2
-            rounded_size = round(order.size, sz_decimals)
+            decimals = self._sz_decimals(order.coin)
+            rounded_size = self._round_down(order.size, decimals)
             if rounded_size <= 0:
                 raise ValueError(
-                    f"rounded size {rounded_size} is zero for {order.coin}"
+                    f"rounded size {rounded_size} is zero for {order.coin} "
+                    f"(raw={order.size}, szDecimals={decimals})"
                 )
         except Exception as e:
             self.log_fn(f"[LIVE-EXECUTOR] ERROR sizing {order.coin}: {e}")
-            return Fill(
-                coin=order.coin, side=order.side, size=order.size,
-                price=ref_price, notional_usd=order.notional_usd,
-                tag=order.tag,
-                timestamp_iso=datetime.now(timezone.utc).isoformat(),
-                simulated=False, status="error", error=str(e),
-            )
+            return self._fill(order, ref_price, 0.0, "error", error=str(e))
 
-        # --- Try maker order first (if enabled) ---
         ex_cfg = self.cfg.raw.get("executor", {})
         prefer_maker = bool(ex_cfg.get("prefer_maker", False))
         maker_timeout = int(ex_cfg.get("maker_timeout_sec", 30))
 
         # HIP-3 pairs (xyz:*) have thin books — maker orders rest for
-        # minutes without filling, causing phantom "OPENED" logs. Force
-        # taker for them so orders fill immediately and unwind logic works.
+        # minutes without filling. Force taker for them.
         skip_maker = order.coin.startswith("xyz:")
 
+        maker_sz, maker_px, oid = 0.0, 0.0, ""
         if prefer_maker and not skip_maker:
-            maker_fill = self._try_maker(order, rounded_size, maker_timeout)
-            if maker_fill is not None:
-                self.safeguards.increment_daily_order_count()
-                return maker_fill
+            maker = self._try_maker(order, rounded_size, maker_timeout)
+            if maker is not None:
+                if maker.status == "unknown":
+                    self.log_fn(
+                        f"[LIVE-EXECUTOR] maker outcome unknown for {order.coin} "
+                        f"oid={maker.order_id}; not sending taker order"
+                    )
+                    return maker
+                maker_sz, maker_px, oid = maker.size, maker.price, maker.order_id
+                if maker.status == "filled":
+                    self.safeguards.increment_daily_order_count()
+                    return maker
 
-        # --- Fall back to market order ---
-        is_buy = order.side == "buy"
-        try:
-            slippage = float(ex_cfg.get("slippage_tolerance", 0.03))
-            result = self.exchange.market_open(
-                order.coin, is_buy, rounded_size, ref_price, slippage,
-            )
-        except Exception as e:
-            self.log_fn(f"[LIVE-EXECUTOR] ERROR placing {order.tag}: {e}")
-            return Fill(
-                coin=order.coin, side=order.side, size=rounded_size,
-                price=ref_price, notional_usd=order.notional_usd,
-                tag=order.tag,
-                timestamp_iso=datetime.now(timezone.utc).isoformat(),
-                simulated=False, status="error", error=str(e),
-            )
+        remaining = self._round_down(rounded_size - maker_sz, decimals)
+        taker_sz, taker_px, taker_oid, err = 0.0, 0.0, "", ""
+        if remaining > 0:
+            taker_sz, taker_px, taker_oid, err = self._taker(order, remaining, ref_price)
 
-        # --- Parse result ---
-        order_status = "error"
-        oid = ""
-        error_msg = ""
-        actual_filled_size = rounded_size   # assume full unless we learn otherwise
-        is_partial = False
-
-        if isinstance(result, dict):
-            top = result.get("status", "unknown")
-            if top != "ok":
-                error_msg = f"top-level status={top}"
-            else:
-                statuses = (
-                    result.get("response", {})
-                    .get("data", {})
-                    .get("statuses", [])
-                )
-                if not statuses:
-                    error_msg = "no statuses in response"
-                else:
-                    first = statuses[0]
-                    if isinstance(first, dict):
-                        if "error" in first:
-                            error_msg = str(first["error"])
-                        elif "filled" in first:
-                            order_status = "filled"
-                            oid = str(first["filled"].get("oid", ""))
-                            try:
-                                sz = float(first["filled"].get("totalSz", rounded_size))
-                            except (TypeError, ValueError):
-                                sz = rounded_size
-                            actual_filled_size = sz
-                            if sz < rounded_size * 0.95:
-                                is_partial = True
-                        elif "resting" in first:
-                            # Resting = order on book, not filled. Mark as
-                            # partial so caller knows to handle unwind.
-                            order_status = "resting"
-                            oid = str(first["resting"].get("oid", ""))
-                            try:
-                                sz = float(first["resting"].get("sz", rounded_size))
-                            except (TypeError, ValueError):
-                                sz = rounded_size
-                            actual_filled_size = sz
-                        else:
-                            error_msg = f"unknown status: {first}"
-                    else:
-                        error_msg = f"non-dict status: {first}"
-
-        fill = Fill(
-            coin=order.coin, side=order.side, size=actual_filled_size,
-            price=ref_price, notional_usd=order.notional_usd,
-            tag=order.tag,
-            timestamp_iso=datetime.now(timezone.utc).isoformat(),
-            simulated=False,
-            status=("partial" if is_partial else order_status),
-            order_id=oid,
-            error=("partial_fill" if is_partial else error_msg),
+        total = maker_sz + taker_sz
+        avg_px = (
+            (maker_sz * maker_px + taker_sz * taker_px) / total
+            if total > 0 else ref_price
+        )
+        if total >= rounded_size * 0.95:
+            status = "filled"
+        elif total > 0:
+            status = "partial"
+        else:
+            status = "error"
+        fill = self._fill(
+            order, avg_px, total, status,
+            oid=taker_oid or oid,
+            error=err if status != "filled" else "",
         )
 
-        if fill.status == "filled":
+        if total > 0:
             self.safeguards.increment_daily_order_count()
-            self.log_fn(
-                f"[LIVE-EXECUTOR] TAKER {fill.side.upper():4s} "
-                f"{fill.size:.6f} {fill.coin:6s} @ {fill.price:.6f}  "
-                f"oid={fill.order_id}  tag={fill.tag}"
-            )
-        elif fill.status == "partial":
-            self.safeguards.increment_daily_order_count()
-            self.log_fn(
-                f"[LIVE-EXECUTOR] PARTIAL {fill.side.upper():4s} "
-                f"{fill.size:.6f} {fill.coin:6s} @ {fill.price:.6f}  "
-                f"(requested {rounded_size:.6f})  oid={fill.order_id}  tag={fill.tag}"
-            )
-        else:
-            self.log_fn(
-                f"[LIVE-EXECUTOR] FAIL {fill.side.upper():4s} "
-                f"{fill.size:.6f} {fill.coin:6s}  "
-                f"ERROR: {fill.error}  tag={fill.tag}"
-            )
+        label = {"filled": "TAKER", "partial": "PARTIAL"}.get(status, "FAIL")
+        self.log_fn(
+            f"[LIVE-EXECUTOR] {label} {fill.side.upper():4s} "
+            f"{fill.size:.6f}/{rounded_size:.6f} {fill.coin:6s} @ {fill.price:.6f}  "
+            f"oid={fill.order_id}  tag={fill.tag}"
+            f"{'  reduce_only' if order.reduce_only else ''}"
+            f"{'  ERROR: ' + fill.error if fill.error else ''}"
+        )
         return fill
+
+    def _taker(self, order: Order, size: float,
+               ref_price: float) -> tuple[float, float, str, str]:
+        """IOC order. Returns (filled_size, avg_px, oid, error)."""
+        is_buy = order.side == "buy"
+        slippage = float(
+            self.cfg.raw.get("executor", {}).get("slippage_tolerance", 0.03)
+        )
+        try:
+            px = self.exchange._slippage_price(order.coin, is_buy, slippage, ref_price)
+            result = self.exchange.order(
+                order.coin, is_buy, size, px,
+                {"limit": {"tif": "Ioc"}},
+                reduce_only=order.reduce_only,
+            )
+        except Exception as e:
+            return 0.0, 0.0, "", f"{type(e).__name__}: {e}"
+        return self._parse_ioc(result)
+
+    @staticmethod
+    def _parse_ioc(result) -> tuple[float, float, str, str]:
+        if not isinstance(result, dict):
+            return 0.0, 0.0, "", f"bad response: {result!r}"
+        if result.get("status") != "ok":
+            return 0.0, 0.0, "", f"top-level status={result.get('status')}: {result.get('response')}"
+        statuses = result.get("response", {}).get("data", {}).get("statuses", [])
+        if not statuses or not isinstance(statuses[0], dict):
+            return 0.0, 0.0, "", f"no usable status: {statuses!r}"
+        first = statuses[0]
+        if "filled" in first:
+            f = first["filled"]
+            return (float(f.get("totalSz", 0)), float(f.get("avgPx", 0)),
+                    str(f.get("oid", "")), "")
+        if "error" in first:
+            return 0.0, 0.0, "", str(first["error"])
+        if "resting" in first:
+            return 0.0, 0.0, str(first["resting"].get("oid", "")), "unexpected resting IOC order"
+        return 0.0, 0.0, "", f"unknown status: {first}"
+
+    def _filled_by_oid(self, oid: str) -> tuple[float, float] | None:
+        """(filled_size, avg_px) from the user's fills, or None if unavailable."""
+        try:
+            fills = self.info.user_fills(self.wallet_address)
+        except Exception as e:
+            self.log_fn(f"[LIVE-EXECUTOR] fill query failed for oid={oid}: {e}")
+            return None
+        mine = [f for f in fills if str(f.get("oid")) == str(oid)]
+        size = sum(float(f["sz"]) for f in mine)
+        if size <= 0:
+            return 0.0, 0.0
+        return size, sum(float(f["sz"]) * float(f["px"]) for f in mine) / size
 
     # ---------------- maker order helper ----------------
     def _try_maker(self, order: Order, rounded_size: float,
                    timeout_sec: int) -> Fill | None:
         """
-        Try to place a post-only limit order at the best bid/ask.
-        Returns a Fill if successful, None if we should fall back to taker.
+        Try a post-only limit order at the best bid/ask.
+
+        Returns None if no maker order was placed (caller sends the full size
+        as taker). Otherwise returns a Fill whose size is the quantity the
+        maker order actually filled; status "unknown" means the filled
+        quantity could not be determined and nothing more should be sent.
         """
         is_buy = order.side == "buy"
         try:
@@ -384,52 +433,40 @@ class LiveExecutor(BaseExecutor):
                 return None
             best_bid = float(bids[0]["px"])
             best_ask = float(asks[0]["px"])
-
-            # Post-only at best bid (buy) or best ask (sell)
             maker_px = best_bid if is_buy else best_ask
             self.log_fn(
                 f"[LIVE-EXECUTOR] maker attempt: {order.side.upper()} "
                 f"{rounded_size:.6f} {order.coin} @ {maker_px:.6f} "
                 f"(bid={best_bid:.4f} ask={best_ask:.4f})"
             )
-
             maker_result = self.exchange.order(
-                name=order.coin,
-                is_buy=is_buy,
-                sz=rounded_size,
-                limit_px=maker_px,
-                order_type={"limit": {"tif": "Alo"}},
+                order.coin, is_buy, rounded_size, maker_px,
+                {"limit": {"tif": "Alo"}},
+                reduce_only=order.reduce_only,
             )
         except Exception as e:
             self.log_fn(f"[LIVE-EXECUTOR] maker error: {e}")
             return None
 
-        # Extract OID
-        oid = ""
-        if isinstance(maker_result, dict):
-            statuses = (
-                maker_result.get("response", {})
-                .get("data", {})
-                .get("statuses", [])
-            )
-            if statuses and isinstance(statuses[0], dict):
-                first = statuses[0]
-                if "resting" in first:
-                    oid = str(first["resting"].get("oid", ""))
-                elif "filled" in first:
-                    # Filled immediately (rare for post-only but possible)
-                    oid = str(first["filled"].get("oid", ""))
-                elif "error" in first:
-                    self.log_fn(
-                        f"[LIVE-EXECUTOR] maker rejected: {first['error']}"
-                    )
-                    return None
-
-        if not oid:
-            self.log_fn("[LIVE-EXECUTOR] maker no OID returned")
+        if not isinstance(maker_result, dict) or maker_result.get("status") != "ok":
+            self.log_fn(f"[LIVE-EXECUTOR] maker not accepted: {maker_result!r}")
             return None
+        statuses = maker_result.get("response", {}).get("data", {}).get("statuses", [])
+        first = statuses[0] if statuses and isinstance(statuses[0], dict) else {}
+        if "error" in first:
+            self.log_fn(f"[LIVE-EXECUTOR] maker rejected: {first['error']}")
+            return None
+        if "filled" in first:
+            f = first["filled"]
+            sz = float(f.get("totalSz", rounded_size))
+            px = float(f.get("avgPx", maker_px))
+            status = "filled" if sz >= rounded_size * 0.95 else "partial"
+            return self._fill(order, px, sz, status, oid=str(f.get("oid", "")))
+        if "resting" not in first:
+            return self._fill(order, maker_px, 0.0, "unknown",
+                              error=f"unrecognized maker response: {first}")
+        oid = str(first["resting"].get("oid", ""))
 
-        # Wait for fill
         poll_interval = 5
         polls = max(1, timeout_sec // poll_interval)
         for _ in range(polls):
@@ -438,165 +475,46 @@ class LiveExecutor(BaseExecutor):
                 order_info = self.info.query_order_by_oid(
                     self.wallet_address, int(oid),
                 )
-                if isinstance(order_info, dict):
-                    # SDK returns either {"order": {...}} or the order dict directly
-                    inner = order_info.get("order", order_info)
-                    status = inner.get("status", "")
-                    if status == "filled":
-                        self.log_fn(
-                            f"[LIVE-EXECUTOR] MAKER FILLED "
-                            f"{order.side.upper()} {rounded_size:.6f} "
-                            f"{order.coin} @ {maker_px:.6f} oid={oid}"
-                        )
-                        return Fill(
-                            coin=order.coin, side=order.side,
-                            size=rounded_size, price=maker_px,
-                            notional_usd=order.notional_usd,
-                            tag=order.tag,
-                            timestamp_iso=datetime.now(timezone.utc).isoformat(),
-                            simulated=False,
-                            status="filled", order_id=oid, error="",
-                        )
-                    elif status in ("canceled", "rejected"):
-                        self.log_fn(
-                            f"[LIVE-EXECUTOR] maker order {status}: oid={oid}"
-                        )
-                        return None
+                inner = order_info.get("order", order_info) if isinstance(order_info, dict) else {}
+                status = inner.get("status", "")
+                if status == "filled":
+                    got = self._filled_by_oid(oid)
+                    sz, px = got if got and got[0] > 0 else (rounded_size, maker_px)
+                    self.log_fn(
+                        f"[LIVE-EXECUTOR] MAKER FILLED {order.side.upper()} "
+                        f"{sz:.6f} {order.coin} @ {px:.6f} oid={oid}"
+                    )
+                    return self._fill(order, px, sz, "filled", oid=oid)
+                if status in ("canceled", "rejected", "marginCanceled"):
+                    self.log_fn(f"[LIVE-EXECUTOR] maker order {status}: oid={oid}")
+                    break
             except Exception as e:
                 self.log_fn(f"[LIVE-EXECUTOR] status check error: {e}")
                 break
 
-
-        # Timeout: cancel and return None
         try:
             self.exchange.cancel(order.coin, int(oid))
-            self.log_fn(
-                f"[LIVE-EXECUTOR] maker timeout ({timeout_sec}s), "
-                f"cancelled oid={oid}"
-            )
+            self.log_fn(f"[LIVE-EXECUTOR] maker cancelled oid={oid}")
         except Exception as e:
-            self.log_fn(f"[LIVE-EXECUTOR] cancel error: {e}")
+            self.log_fn(f"[LIVE-EXECUTOR] cancel error oid={oid}: {e}")
 
-        return None
-
-
-        # --- Place order ---
-        is_buy = order.side == "buy"
-
-        # Round size to exchange precision (szDecimals per asset).
-        # Hyperliquid rejects sizes with too many decimals.
-        try:
-            meta = self.info.meta()
-            sz_decimals = None
-            for asset in meta.get("universe", []):
-                if asset.get("name") == order.coin:
-                    sz_decimals = int(asset.get("szDecimals", 0))
-                    break
-            if sz_decimals is None:
-                # Fallback: assume 2 decimals for unknown assets
-                sz_decimals = 2
-            rounded_size = round(order.size, sz_decimals)
-            if rounded_size <= 0:
-                raise ValueError(
-                    f"rounded size {rounded_size} is zero for {order.coin} "
-                    f"(raw={order.size}, szDecimals={sz_decimals})"
-                )
-        except Exception as e:
-            self.log_fn(
-                f"[LIVE-EXECUTOR] ERROR sizing {order.coin}: {e}"
-            )
-            return Fill(
-                coin=order.coin, side=order.side, size=order.size,
-                price=ref_price, notional_usd=order.notional_usd,
-                tag=order.tag,
-                timestamp_iso=datetime.now(timezone.utc).isoformat(),
-                simulated=False, status="error", error=str(e),
-            )
-
-        try:
-            slippage = float(
-                self.cfg.raw.get("executor", {})
-                .get("slippage_tolerance", 0.03)
-            )
-            result = self.exchange.market_open(
-                order.coin, is_buy, rounded_size, ref_price, slippage,
-            )
-
-
-        except Exception as e:
-            self.log_fn(f"[LIVE-EXECUTOR] ERROR placing {order.tag}: {e}")
-            return Fill(
-                coin=order.coin, side=order.side, size=order.size,
-                price=ref_price, notional_usd=order.notional_usd,
-                tag=order.tag,
-                timestamp_iso=datetime.now(timezone.utc).isoformat(),
-                simulated=False, status="error", error=str(e),
-            )
-
-        # --- Parse result ---
-        # Hyperliquid SDK returns:
-        #   {"status": "ok", "response": {"data": {"statuses": [...]}}}
-        # Each entry in statuses can be:
-        #   {"resting": {"oid": 123}}  -> limit order placed
-        #   {"filled": {"oid": 456}}   -> market order filled
-        #   {"error": "message"}       -> rejected
-        order_status = "error"
-        oid = ""
-        error_msg = ""
-
-        if isinstance(result, dict):
-            top = result.get("status", "unknown")
-            if top != "ok":
-                error_msg = f"top-level status={top}"
-            else:
-                statuses = (
-                    result.get("response", {})
-                    .get("data", {})
-                    .get("statuses", [])
-                )
-                if not statuses:
-                    error_msg = "no statuses in response"
-                else:
-                    first = statuses[0]
-                    if isinstance(first, dict):
-                        if "error" in first:
-                            error_msg = str(first["error"])
-                        elif "filled" in first:
-                            order_status = "filled"
-                            oid = str(first["filled"].get("oid", ""))
-                        elif "resting" in first:
-                            order_status = "filled"
-                            oid = str(first["resting"].get("oid", ""))
-                        else:
-                            error_msg = f"unknown status: {first}"
-                    else:
-                        error_msg = f"non-dict status: {first}"
-
-        fill = Fill(
-            coin=order.coin, side=order.side, size=rounded.size,
-            price=ref_price, notional_usd=order.notional_usd,
-            tag=order.tag,
-            timestamp_iso=datetime.now(timezone.utc).isoformat(),
-            simulated=False,
-            status=order_status,
-            order_id=oid,
-            error=error_msg,
-        )
-
-        if fill.status == "filled":
-            self.safeguards.increment_daily_order_count()
-            self.log_fn(
-                f"[LIVE-EXECUTOR] OK {fill.side.upper():4s} "
-                f"{fill.size:.6f} {fill.coin:6s} @ {fill.price:.6f}  "
-                f"oid={fill.order_id}  tag={fill.tag}"
-            )
+        got = self._filled_by_oid(oid)
+        if got is None:
+            return self._fill(order, maker_px, 0.0, "unknown", oid=oid,
+                              error="maker fill quantity unknown after cancel")
+        sz, px = got
+        if sz >= rounded_size * 0.95:
+            status = "filled"
+        elif sz > 0:
+            status = "partial"
         else:
+            status = "none"
+        if sz > 0:
             self.log_fn(
-                f"[LIVE-EXECUTOR] FAIL {fill.side.upper():4s} "
-                f"{fill.size:.6f} {fill.coin:6s}  "
-                f"ERROR: {fill.error}  tag={fill.tag}"
+                f"[LIVE-EXECUTOR] maker filled {sz:.6f}/{rounded_size:.6f} "
+                f"{order.coin} before cancel oid={oid}"
             )
-        return fill
+        return self._fill(order, px or maker_px, sz, status, oid=oid)
 
 
 def build_executor(cfg, log_fn=print) -> BaseExecutor:

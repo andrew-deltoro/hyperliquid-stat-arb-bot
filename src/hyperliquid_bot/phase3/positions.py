@@ -1,16 +1,35 @@
 """Position manager: open new, monitor existing, close on exit rules."""
 from __future__ import annotations
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from .state import Position, State, load_state, save_state, now_iso
 from .signals import Signal
-from .executor import BaseExecutor, Order, build_executor
+from .executor import BaseExecutor, Fill, Order, build_executor
 from . import journal
 from .correlation_guard import CorrelationGuard
 
 
+# A leg counts as filled when at least this fraction of the requested size
+# shows up on the exchange.
+FULL_FILL_FRAC = 0.95
+# Live exposure below this many USD doesn't block re-entry on a coin.
+DUST_THRESHOLD_USD = 5.0
+
+
 def _parse_iso(s: str) -> datetime:
     return datetime.fromisoformat(s)
+
+
+def _signed(side: str, size: float) -> float:
+    return size if side == "buy" else -size
+
+
+@dataclass
+class LegResult:
+    placed: bool
+    delta: Optional[float]      # signed position change; None if unknown
+    fill: Optional[Fill]
 
 
 class PositionManager:
@@ -33,6 +52,9 @@ class PositionManager:
                 return p
         return None
 
+    def needs_review(self) -> list[dict]:
+        return [p for p in self.state.positions if p["status"] == "needs_review"]
+
     def total_open_notional(self) -> float:
         return sum(
             p["notional_usd"] for p in self.state.positions
@@ -40,7 +62,137 @@ class PositionManager:
         )
 
     def open_count(self) -> int:
-        return sum(1 for p in self.state.positions if p["status"] == "open")
+        return sum(
+            1 for p in self.state.positions
+            if p["status"] in ("open", "needs_review")
+        )
+
+    def _verifies(self) -> bool:
+        return getattr(self.executor, "verifies_positions", False)
+
+    def _lot(self, coin: str) -> float:
+        return max(self.executor.lot_size(coin), 1e-9)
+
+    def _leg_target(self, pos: dict, leg: str) -> float:
+        """Signed quantity this position holds in leg 'a' or 'b'."""
+        key = f"size_{leg}"
+        if key in pos:
+            return float(pos[key])
+        # Positions opened before sizes were stored: rebuild the entry
+        # quantity the same way try_open sized it.
+        long_a = pos["direction"] == "LONG_A_SHORT_B"
+        sign = (1.0 if long_a else -1.0) * (1.0 if leg == "a" else -1.0)
+        return sign * abs(pos[f"leg_{leg}_usd"]) / pos[f"entry_price_{leg}"]
+
+    @staticmethod
+    def _holds(live: float, target: float) -> bool:
+        return live != 0 and (live > 0) == (target > 0)
+
+    def _execute_leg(self, coin: str, side: str, size: float, notional: float,
+                     tag: str, ref_price: float,
+                     reduce_only: bool = False) -> LegResult:
+        """Place one order and measure the resulting position change."""
+        verifies = self._verifies()
+        before = self.executor.get_position(coin) if verifies else 0.0
+        if verifies and before is None:
+            return LegResult(placed=False, delta=None, fill=None)
+
+        fill = self.executor.place_order(
+            Order(coin=coin, side=side, size=size, notional_usd=notional,
+                  tag=tag, reduce_only=reduce_only),
+            ref_price=ref_price,
+        )
+        if not verifies:
+            filled = fill.size if fill.status in ("filled", "partial") else 0.0
+            return LegResult(placed=True, delta=_signed(side, filled), fill=fill)
+
+        after = self.executor.get_position(coin)
+        delta = None if after is None else after - before
+        return LegResult(placed=True, delta=delta, fill=fill)
+
+    def _unwind(self, coin: str, delta: float, ref_price: float, tag: str,
+                attempts: int = 3) -> bool:
+        """Reverse a measured position change. True if the coin is back."""
+        for _ in range(attempts):
+            if abs(delta) < self._lot(coin):
+                return True
+            side = "sell" if delta > 0 else "buy"
+            res = self._execute_leg(
+                coin, side, abs(delta), abs(delta) * ref_price, tag, ref_price,
+                reduce_only=True,
+            )
+            if res.delta is None:
+                return False
+            delta += res.delta
+        return abs(delta) < self._lot(coin)
+
+    def _flag_review(self, sig: Signal, reason: str, **legs) -> dict:
+        record = {
+            "pair": sig.pair,
+            "coin_a": sig.coin_a,
+            "coin_b": sig.coin_b,
+            "direction": sig.direction,
+            "status": "needs_review",
+            "review_reason": reason,
+            "review_time_iso": now_iso(),
+            **legs,
+        }
+        self.state.positions.append(record)
+        save_state(self.state)
+        self.log_fn(f"[POSITION] ⚠ NEEDS REVIEW {sig.pair}: {reason} {legs}")
+        return {"opened": False, "reason": f"needs_review: {reason}"}
+
+    # ---------------- reconcile ----------------
+    def reconcile(self) -> bool:
+        """
+        Compare open positions with the exchange.
+
+        Returns False (and changes nothing) if exchange state is unavailable;
+        callers must not open new positions in that case.
+        """
+        if not self._verifies():
+            return True
+        live = self.executor.all_positions()
+        if live is None:
+            self.log_fn(
+                "[RECONCILE] exchange state unavailable — no state changes; "
+                "new entries blocked this cycle"
+            )
+            return False
+
+        changed = False
+        tracked: set[str] = set()
+        for pos in self.state.positions:
+            if pos["status"] not in ("open", "needs_review"):
+                continue
+            a, b = pos["coin_a"], pos["coin_b"]
+            tracked |= {a, b}
+            if pos["status"] != "open":
+                continue
+            has_a = self._holds(live.get(a, 0.0), self._leg_target(pos, "a"))
+            has_b = self._holds(live.get(b, 0.0), self._leg_target(pos, "b"))
+            if has_a and has_b:
+                continue
+            if not has_a and not has_b:
+                pos["status"] = "closed"
+                pos["exit_reason"] = "state_reconciled"
+                self.log_fn(f"[RECONCILE] {pos['pair']}: both legs gone on exchange; marked closed")
+            else:
+                missing = a if not has_a else b
+                pos["status"] = "needs_review"
+                pos["review_reason"] = f"leg {missing} missing on exchange"
+                self.log_fn(f"[RECONCILE] ⚠ {pos['pair']}: leg {missing} missing on exchange; needs review")
+            changed = True
+
+        orphans = sorted(set(live) - tracked)
+        if orphans:
+            self.log_fn(
+                f"[RECONCILE] ⚠ exchange positions not tracked in state: "
+                f"{ {c: live[c] for c in orphans} }"
+            )
+        if changed:
+            save_state(self.state)
+        return True
 
     # ---------------- open ----------------
     def try_open(self, sig: Signal, price_a: float, price_b: float) -> dict:
@@ -51,33 +203,24 @@ class PositionManager:
         if self.find_open(sig.pair) is not None:
             return {"opened": False, "reason": "already open"}
 
+        coins = {sig.coin_a, sig.coin_b}
+        for p in self.needs_review():
+            if coins & {p["coin_a"], p["coin_b"]}:
+                return {"opened": False, "reason": f"needs_review on {p['pair']}"}
+
         # Defensive: verify against live exchange (state can drift)
-        if self.executor is not None and hasattr(self.executor, "info"):
-            try:
-                live_state = self.executor.info.user_state(
-                    self.executor.wallet_address
-                )
-                # Filter out dust: positions under $5 notional don't count
-                # as live exposure, otherwise residuals from partial exits
-                # block re-entry on the same pair.
-                DUST_THRESHOLD_USD = 5.0
-                live_coins = {
-                    p["position"]["coin"]
-                    for p in live_state.get("assetPositions", [])
-                    if abs(float(p["position"].get("positionValue", 0))) > DUST_THRESHOLD_USD
-                }
-                conflicting = {sig.coin_a, sig.coin_b} & live_coins
-                if conflicting:
+        if self._verifies():
+            for coin, px in ((sig.coin_a, price_a), (sig.coin_b, price_b)):
+                live = self.executor.get_position(coin)
+                if live is None:
+                    return {"opened": False, "reason": f"live position unknown for {coin}"}
+                # Dust residuals from partial exits shouldn't block re-entry.
+                if abs(live) * px > DUST_THRESHOLD_USD:
                     self.log_fn(
                         f"[PRE-TRADE] {sig.pair}: already has live exposure "
-                        f"on {conflicting}. Skipping to avoid duplicate."
+                        f"on {coin}. Skipping to avoid duplicate."
                     )
-                    return {
-                        "opened": False,
-                        "reason": f"live_exposure: {conflicting}",
-                    }
-            except Exception as e:
-                self.log_fn(f"[PRE-TRADE] exchange check failed: {e}")
+                    return {"opened": False, "reason": f"live_exposure: {coin}"}
 
         if self.open_count() >= self.cfg.risk["max_concurrent_positions"]:
             return {"opened": False, "reason": "max concurrent positions"}
@@ -115,6 +258,63 @@ class PositionManager:
         leg_a_usd = notional / 2.0
         leg_b_usd = (notional / 2.0) * sig.beta
 
+        sign_a = "buy" if sig.direction == "LONG_A_SHORT_B" else "sell"
+        sign_b = "sell" if sig.direction == "LONG_A_SHORT_B" else "buy"
+
+        size_a = leg_a_usd / (price_a + 1e-12)
+        size_b = leg_b_usd / (price_b + 1e-12)
+
+        # --- Place leg A ---
+        res_a = self._execute_leg(sig.coin_a, sign_a, size_a, leg_a_usd,
+                                  "arb_open", price_a)
+        if res_a.delta is None:
+            if not res_a.placed:
+                return {"opened": False, "reason": f"live position unknown for {sig.coin_a}"}
+            return self._flag_review(sig, f"leg A ({sig.coin_a}) outcome unknown",
+                                     delta_a=None)
+        if abs(res_a.delta) < size_a * FULL_FILL_FRAC:
+            error = res_a.fill.error if res_a.fill else ""
+            if abs(res_a.delta) > 0 and not self._unwind(
+                sig.coin_a, res_a.delta, price_a, "arb_rollback"
+            ):
+                return self._flag_review(
+                    sig, f"leg A ({sig.coin_a}) partial and unwind failed",
+                    delta_a=res_a.delta,
+                )
+            return {
+                "opened": False,
+                "reason": f"leg A ({sig.coin_a}) failed: {error or 'not filled'}",
+            }
+
+        # --- Place leg B ---
+        res_b = self._execute_leg(sig.coin_b, sign_b, size_b, leg_b_usd,
+                                  "arb_open", price_b)
+        if res_b.delta is None or abs(res_b.delta) < size_b * FULL_FILL_FRAC:
+            error = res_b.fill.error if res_b.fill else ""
+            self.log_fn(
+                f"[POSITION] leg B ({sig.coin_b}) failed — "
+                f"rolling back leg A ({sig.coin_a})"
+            )
+            if res_b.delta is None and res_b.placed:
+                return self._flag_review(
+                    sig, f"leg B ({sig.coin_b}) outcome unknown",
+                    delta_a=res_a.delta, delta_b=None,
+                )
+            ok_b = self._unwind(sig.coin_b, res_b.delta or 0.0, price_b, "arb_rollback")
+            ok_a = self._unwind(sig.coin_a, res_a.delta, price_a, "arb_rollback")
+            if not (ok_a and ok_b):
+                return self._flag_review(
+                    sig, "leg B failed and rollback incomplete",
+                    delta_a=res_a.delta, delta_b=res_b.delta,
+                )
+            return {
+                "opened": False,
+                "reason": f"leg B ({sig.coin_b}) failed: {error or 'not filled'}",
+            }
+
+        entry_a = res_a.fill.price if res_a.fill and res_a.fill.price > 0 else price_a
+        entry_b = res_b.fill.price if res_b.fill and res_b.fill.price > 0 else price_b
+
         pos = Position(
             pair=sig.pair,
             coin_a=sig.coin_a,
@@ -125,8 +325,8 @@ class PositionManager:
             entry_mean_raw=sig.mean_raw,
             entry_sigma_raw=sig.sigma_raw,
             entry_spread=entry_spread,
-            entry_price_a=price_a,
-            entry_price_b=price_b,
+            entry_price_a=entry_a,
+            entry_price_b=entry_b,
             entry_time_iso=now_iso(),
             half_life_hours=hl,
             target_spread=target_spread,
@@ -141,48 +341,8 @@ class PositionManager:
         pos_dict = pos.__dict__
         pos_dict["p_revert_at_entry"] = sig.p_revert
         pos_dict["beta_sd_entry"] = sig.beta_sd
-
-        sign_a = "buy" if sig.direction == "LONG_A_SHORT_B" else "sell"
-        sign_b = "sell" if sig.direction == "LONG_A_SHORT_B" else "buy"
-
-        size_a = leg_a_usd / (price_a + 1e-12)
-        size_b = leg_b_usd / (price_b + 1e-12)
-
-        # --- Place leg A ---
-        fill_a = self.executor.place_order(
-            Order(coin=sig.coin_a, side=sign_a, size=size_a,
-                  notional_usd=leg_a_usd, tag="arb_open"),
-            ref_price=price_a,
-        )
-        if fill_a.status != "filled":
-            return {
-                "opened": False,
-                "reason": f"leg A ({sig.coin_a}) failed: {fill_a.error}",
-            }
-
-        # --- Place leg B ---
-        fill_b = self.executor.place_order(
-            Order(coin=sig.coin_b, side=sign_b, size=size_b,
-                  notional_usd=leg_b_usd, tag="arb_open"),
-            ref_price=price_b,
-        )
-        if fill_b.status != "filled":
-            # Roll back leg A: place a closing order
-            self.log_fn(
-                f"[POSITION] leg B ({sig.coin_b}) failed — "
-                f"rolling back leg A ({sig.coin_a})"
-            )
-            close_side_a = "sell" if sign_a == "buy" else "buy"
-            self.executor.place_order(
-                Order(coin=sig.coin_a, side=close_side_a,
-                      size=size_a, notional_usd=leg_a_usd,
-                      tag="arb_rollback"),
-                ref_price=price_a,
-            )
-            return {
-                "opened": False,
-                "reason": f"leg B ({sig.coin_b}) failed: {fill_b.error}",
-            }
+        pos_dict["size_a"] = res_a.delta
+        pos_dict["size_b"] = res_b.delta
 
         # --- Both legs filled: record position ---
         self.state.positions.append(pos_dict)
@@ -219,6 +379,10 @@ class PositionManager:
                 exit_price_a=price_a_now,
                 exit_price_b=price_b_now,
             )
+
+        # A previous close didn't complete: finish it before anything else.
+        if pos.get("close_pending"):
+            return close(pos["close_pending"])
 
         direction = pos["direction"]
         long_a = direction == "LONG_A_SHORT_B"
@@ -317,6 +481,42 @@ class PositionManager:
             "z_now": z_now,
         }
 
+    def _close_leg(self, pos: dict, leg: str, price: float,
+                   reason: str) -> tuple[bool, Optional[float], str]:
+        """
+        Reduce one leg toward flat. Returns (done, avg_exit_price, problem);
+        problem is non-empty when the leg needs human review.
+        """
+        coin = pos[f"coin_{leg}"]
+        remaining = self._leg_target(pos, leg)
+        lot = self._lot(coin)
+        if abs(remaining) < lot:
+            return True, None, ""
+
+        size = abs(remaining)
+        if self._verifies():
+            live = self.executor.get_position(coin)
+            if live is None:
+                return False, None, ""
+            if not self._holds(live, remaining):
+                return False, None, f"leg {coin} expected {remaining:+.6f}, exchange has {live:+.6f}"
+            # Never ask for more than the exchange holds; the remainder of an
+            # unrounded legacy size is below one lot.
+            size = min(size, abs(live))
+
+        side = "sell" if remaining > 0 else "buy"
+        res = self._execute_leg(
+            coin, side, size, size * price, f"arb_close_{reason}", price,
+            reduce_only=True,
+        )
+        if res.delta is None:
+            return False, None, ""
+
+        new_remaining = remaining + res.delta
+        pos[f"size_{leg}"] = 0.0 if abs(new_remaining) < lot else new_remaining
+        exit_px = res.fill.price if res.fill and res.fill.size > 0 else None
+        return abs(new_remaining) < lot, exit_px, ""
+
     def _close(
         self,
         pos: dict,
@@ -326,25 +526,36 @@ class PositionManager:
         exit_price_a: Optional[float] = None,
         exit_price_b: Optional[float] = None,
     ) -> dict:
-        # Place close orders first (dry-run just logs)
         if exit_price_a is not None and exit_price_b is not None:
-            sign_a = "sell" if pos["direction"] == "LONG_A_SHORT_B" else "buy"
-            sign_b = "buy" if pos["direction"] == "LONG_A_SHORT_B" else "sell"
-            self.executor.place_order(
-                Order(coin=pos["coin_a"], side=sign_a,
-                      size=pos["leg_a_usd"] / (exit_price_a + 1e-12),
-                      notional_usd=pos["leg_a_usd"],
-                      tag=f"arb_close_{reason}"),
-                ref_price=exit_price_a,
-            )
-            self.executor.place_order(
-                Order(coin=pos["coin_b"], side=sign_b,
-                      size=pos["leg_b_usd"] / (exit_price_b + 1e-12),
-                      notional_usd=pos["leg_b_usd"],
-                      tag=f"arb_close_{reason}"),
-                ref_price=exit_price_b,
-            )
+            done_a, px_a, problem_a = self._close_leg(pos, "a", exit_price_a, reason)
+            done_b, px_b, problem_b = self._close_leg(pos, "b", exit_price_b, reason)
+            if px_a:
+                pos["exit_fill_price_a"] = px_a
+            if px_b:
+                pos["exit_fill_price_b"] = px_b
+            exit_price_a = pos.get("exit_fill_price_a", exit_price_a)
+            exit_price_b = pos.get("exit_fill_price_b", exit_price_b)
 
+            problem = "; ".join(p for p in (problem_a, problem_b) if p)
+            if problem:
+                pos["status"] = "needs_review"
+                pos["review_reason"] = problem
+                save_state(self.state)
+                self.log_fn(f"[POSITION] ⚠ NEEDS REVIEW {pos['pair']}: {problem}")
+                return {"action": "close_failed", "reason": reason,
+                        "error": problem, "position": pos}
+            if not (done_a and done_b):
+                pos["close_pending"] = reason
+                save_state(self.state)
+                self.log_fn(
+                    f"[POSITION] {pos['pair']}: close incomplete "
+                    f"(size_a={pos.get('size_a')}, size_b={pos.get('size_b')}); "
+                    f"will retry next cycle"
+                )
+                return {"action": "close_failed", "reason": reason,
+                        "error": "close incomplete", "position": pos}
+
+        pos.pop("close_pending", None)
         pos["status"] = "closed"
         pos["exit_reason"] = reason
         pos["exit_spread"] = exit_spread
