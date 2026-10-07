@@ -75,10 +75,12 @@ raise caps only after the calibration factor is estimated from recorded trades.
 
 ## Still open
 
-- H6 in full: a joint error-correction/state-space model with beta uncertainty propagated into
-  the OU fit. The current fix corrects `beta_sd` and gates on stationarity, but the OU
-  posterior is still conditional on the posterior-mean spread.
+- ~~H6 in full~~ (branch `cursor/joint-ecm-h6`): `stats/error_correction.py` fits
+  (α, β, κ, σ, ν) in one likelihood; trade sims use per-draw entry spreads; random walks
+  rejected via `P(κ > floor)` as well as Engle–Granger. Two-step path kept behind
+  `model.joint_ecm: false`.
 - §3 step 3: partial pooling of trade returns across pairs, and a fitted (not assumed)
   cross-pair correlation.
 - M8 in full: separate subaccounts per strategy.
 - Funding history in realized PnL.
+- Live orphans COMP / GMT / SNX flagged by reconcile (manual flatten still needed).

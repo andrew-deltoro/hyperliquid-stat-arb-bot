@@ -12,6 +12,7 @@ from ..stats.cointegration import (
     engle_granger_tstat,
     fit_cointegration,
 )
+from ..stats.error_correction import fit_error_correction
 from ..stats.mean_reversion import fit_ou, position_size
 from .leverage import exit_policy_from_cfg, simulate_trade_returns
 
@@ -198,54 +199,103 @@ def generate_signal(
     log_a = np.log(np.array(close_a))
     log_b = np.log(np.array(close_b))
 
-    coint = fit_cointegration(
-        log_a, log_b,
-        draws=cfg.model["coint_draws"],
-        tune=cfg.model["coint_tune"],
-        chains=cfg.model["chains"],
-        cores=cfg.model.get("cores", 1),
-        progressbar=False,
-    )
-    nuts_spread = coint.spread - coint.spread.mean()
-
-    if _should_use_kalman(pair, cfg):
-        _apply_kalman(pair, coint, log_a, log_b, cfg)
-
-    # Centered spread
-    spread_centered = coint.spread - coint.spread.mean()
-    current_spread = float(spread_centered[-1])
-    # The Kalman terminal frame is fitted to the end of the same window it is
-    # scored on; never let that shrink the scale below the static fit's.
-    spread_sd = float(max(spread_centered.std(), nuts_spread.std()))
-    z = current_spread / (spread_sd + 1e-9)
-
-    eg_t = engle_granger_tstat(spread_centered)
+    joint = bool(cfg.model.get("joint_ecm", True))
     eg_level = cfg.signal.get("stationarity_level", 0.10)
-    eg_ok = eg_level is None or eg_t <= EG_CRITICAL[float(eg_level)]
+    min_p_kappa = float(cfg.signal.get("min_p_kappa", 0.80))
+    kappa_floor = float(cfg.signal.get("kappa_floor", 0.002))
 
-    ou = fit_ou(
-        spread_centered,
-        draws=cfg.model["ou_draws"],
-        tune=cfg.model["ou_tune"],
-        chains=cfg.model["chains"],
-        cores=cfg.model.get("cores", 1),
-        progressbar=False,
-        kappa_prior_pop=kappa_prior_pop,
-        kappa_prior_pop_sd=kappa_prior_pop_sd,
-    )
-    half_life_hours = ou.half_life_bars * bar_hours
-
-    kappa_s = ou.idata.posterior["kappa"].stack(s=("chain", "draw")).values
-    sigma_s = ou.idata.posterior["sigma"].stack(s=("chain", "draw")).values
-    nu_s = ou.idata.posterior["nu"].stack(s=("chain", "draw")).values
+    if joint:
+        ecm = fit_error_correction(
+            log_a, log_b,
+            draws=cfg.model.get("ecm_draws", cfg.model["coint_draws"]),
+            tune=cfg.model.get("ecm_tune", cfg.model["coint_tune"]),
+            chains=cfg.model["chains"],
+            cores=cfg.model.get("cores", 1),
+            progressbar=False,
+            kappa_prior_pop=kappa_prior_pop,
+            kappa_prior_pop_sd=kappa_prior_pop_sd,
+            kappa_floor=kappa_floor,
+        )
+        # Optional Kalman on the terminal (α, β) for fast crypto pairs only.
+        # Rebuild the mean residual path; keep posterior draws for simulation.
+        class _CointView:
+            pass
+        coint = _CointView()
+        coint.alpha_mean = ecm.alpha_mean
+        coint.beta_mean = ecm.beta_mean
+        coint.beta_sd = ecm.beta_sd
+        coint.nu_mean = ecm.nu_mean
+        coint.converged = ecm.converged
+        coint.spread = ecm.spread
+        nuts_spread = ecm.spread - ecm.spread.mean()
+        if _should_use_kalman(pair, cfg):
+            _apply_kalman(pair, coint, log_a, log_b, cfg)
+            # Point estimates follow Kalman; predictive draws stay joint-ECM
+            # (Kalman has no posterior over paths here).
+        spread_centered = coint.spread - coint.spread.mean()
+        current_spread = float(spread_centered[-1])
+        spread_sd = float(max(spread_centered.std(), nuts_spread.std()))
+        z = current_spread / (spread_sd + 1e-9)
+        eg_t = ecm.eg_tstat if coint.spread is ecm.spread else engle_granger_tstat(spread_centered)
+        eg_ok = eg_level is None or eg_t <= EG_CRITICAL[float(eg_level)]
+        kappa_ok = ecm.p_kappa_gt >= min_p_kappa
+        half_life_hours = ecm.half_life_bars * bar_hours
+        kappa_s, sigma_s, nu_s = ecm.kappa_draws, ecm.sigma_draws, ecm.nu_draws
+        # Entry level uncertainty from the joint posterior (β uncertainty).
+        spread_for_sim = ecm.current_spread_draws
+        # If Kalman moved the point estimate, shift draws so their mean matches.
+        spread_for_sim = spread_for_sim - spread_for_sim.mean() + current_spread
+        sigma_mean, nu_mean = ecm.sigma_mean, ecm.nu_mean
+        kappa_mean = ecm.kappa_mean
+        models_ok = ecm.converged
+        innov_rho = ecm.innovation_rho
+        p_kappa = ecm.p_kappa_gt
+    else:
+        coint = fit_cointegration(
+            log_a, log_b,
+            draws=cfg.model["coint_draws"],
+            tune=cfg.model["coint_tune"],
+            chains=cfg.model["chains"],
+            cores=cfg.model.get("cores", 1),
+            progressbar=False,
+        )
+        nuts_spread = coint.spread - coint.spread.mean()
+        if _should_use_kalman(pair, cfg):
+            _apply_kalman(pair, coint, log_a, log_b, cfg)
+        spread_centered = coint.spread - coint.spread.mean()
+        current_spread = float(spread_centered[-1])
+        spread_sd = float(max(spread_centered.std(), nuts_spread.std()))
+        z = current_spread / (spread_sd + 1e-9)
+        eg_t = engle_granger_tstat(spread_centered)
+        eg_ok = eg_level is None or eg_t <= EG_CRITICAL[float(eg_level)]
+        kappa_ok = True
+        ou = fit_ou(
+            spread_centered,
+            draws=cfg.model["ou_draws"],
+            tune=cfg.model["ou_tune"],
+            chains=cfg.model["chains"],
+            cores=cfg.model.get("cores", 1),
+            progressbar=False,
+            kappa_prior_pop=kappa_prior_pop,
+            kappa_prior_pop_sd=kappa_prior_pop_sd,
+        )
+        half_life_hours = ou.half_life_bars * bar_hours
+        kappa_s = ou.idata.posterior["kappa"].stack(s=("chain", "draw")).values
+        sigma_s = ou.idata.posterior["sigma"].stack(s=("chain", "draw")).values
+        nu_s = ou.idata.posterior["nu"].stack(s=("chain", "draw")).values
+        spread_for_sim = current_spread
+        sigma_mean, nu_mean, kappa_mean = ou.sigma_mean, ou.nu_mean, ou.kappa_mean
+        models_ok = coint.converged and ou.converged
+        innov_rho = 0.0
+        p_kappa = 1.0
 
     policy = exit_policy_from_cfg(
-        cfg, half_life_bars=min(ou.half_life_bars, 500.0),
+        cfg, half_life_bars=min(half_life_hours / bar_hours, 500.0),
         beta=coint.beta_mean, bar_hours=bar_hours,
     )
     stress_q = float((cfg.raw.get("leverage", {}) or {}).get("stress_quantile", 0.01))
     dist = simulate_trade_returns(
-        current_spread=current_spread,
+        current_spread=spread_for_sim,
         kappa_post=kappa_s, sigma_post=sigma_s, nu_post=nu_s,
         policy=policy, stress_quantile=stress_q,
         seed=int(cfg.model.get("seed", 0)),
@@ -267,8 +317,8 @@ def generate_signal(
     else:
         notional = position_size(
             p_revert=p_revert,
-            sigma=ou.sigma_mean,
-            nu=ou.nu_mean,
+            sigma=sigma_mean,
+            nu=nu_mean,
             base_notional=cfg.position["base_notional"],
         )
         if scaler is not None:
@@ -286,12 +336,12 @@ def generate_signal(
 
     max_vol = cfg.signal.get("max_btc_vol", 1.0)
     checks = [
-        (coint.converged, "coint_not_converged"),
-        (ou.converged, "ou_not_converged"),
+        (models_ok, "model_not_converged"),
         (coint.beta_mean > 0, "beta_nonpositive"),
         (btc_vol is not None, "btc_vol_unknown"),
         (btc_vol is None or btc_vol <= max_vol, "btc_vol_high"),
         (eg_ok, "not_stationary"),
+        (kappa_ok, "kappa_near_zero"),
         (not half_life_rejected, "half_life_too_long"),
         (abs(z) >= threshold, "z_too_small"),
         (dist.exp_return > min_ret, "expected_return_too_small"),
@@ -308,20 +358,26 @@ def generate_signal(
         action = "SKIP"
         direction = "NONE"
 
+    if joint:
+        print(f"[ECM] {pair}: β={coint.beta_mean:.3f}±{coint.beta_sd:.3f} "
+              f"κ={kappa_mean:.4f} P(κ>{kappa_floor})={p_kappa:.2f} "
+              f"innov_ρ={innov_rho:+.3f} EG_t={eg_t:+.2f}")
+
     return Signal(
         pair=pair,
         coin_a=coin_a, coin_b=coin_b,
         beta=coint.beta_mean, beta_sd=coint.beta_sd,
-        nu_coint=coint.nu_mean, converged_coint=coint.converged,
+        nu_coint=getattr(coint, "nu_mean", nu_mean),
+        converged_coint=models_ok,
         alpha=coint.alpha_mean,
         mean_raw=float(coint.spread.mean()),
         sigma_raw=spread_sd,
         current_spread=current_spread,
         spread_sd=spread_sd,
         z=z,
-        kappa=ou.kappa_mean, half_life_hours=half_life_hours,
-        sigma_ou=ou.sigma_mean, nu_ou=ou.nu_mean,
-        converged_ou=ou.converged,
+        kappa=kappa_mean, half_life_hours=half_life_hours,
+        sigma_ou=sigma_mean, nu_ou=nu_mean,
+        converged_ou=models_ok,
         p_revert=p_revert, edge=edge, notional=notional,
         direction=direction, action=action,
         exp_return=dist.exp_return,

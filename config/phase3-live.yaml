@@ -35,10 +35,15 @@ data:
   interval: 1h
   lookback_hours: 720
 model:
+  # Joint error-correction: one NUTS fit for (α, β, κ, σ, ν). Replaces the
+  # two-step cointegration + OU when joint_ecm is true (audit H6).
+  joint_ecm: true
   coint_draws: 2000
   coint_tune: 2000
   ou_draws: 2000
   ou_tune: 2000
+  ecm_draws: 2000
+  ecm_tune: 2000
   chains: 4
   cores: 4
 signal:
@@ -59,6 +64,9 @@ signal:
   kalman_alpha_max_sd: 3.0
   # Engle-Granger residual test at this level (0.01 / 0.05 / 0.10); null disables.
   stationarity_level: 0.10
+  # Joint-ECM: require P(κ > kappa_floor) ≥ min_p_kappa (rejects random walks).
+  kappa_floor: 0.002
+  min_p_kappa: 0.80
   # Minimum posterior-predictive E[net trade return] per unit notional.
   min_expected_return: 0.0
 position:

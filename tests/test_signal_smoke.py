@@ -15,10 +15,12 @@ def cfg(kelly=True):
     }
     return Phase3Config(
         pairs=[], data={"interval": "1h", "lookback_hours": 600},
-        model={"coint_draws": 150, "coint_tune": 150, "ou_draws": 150,
-               "ou_tune": 150, "chains": 2, "cores": 1},
+        model={"joint_ecm": True, "coint_draws": 150, "coint_tune": 150,
+               "ou_draws": 150, "ou_tune": 150, "ecm_draws": 150, "ecm_tune": 150,
+               "chains": 2, "cores": 1},
         signal={"z_entry_min": 1.0, "edge_min": 0.05, "max_btc_vol": 0.55,
-                "half_life_max_hours": 96, "stationarity_level": 0.10},
+                "half_life_max_hours": 96, "stationarity_level": 0.10,
+                "min_p_kappa": 0.5, "kappa_floor": 0.002},
         position={"target_frac": 0.75, "stop_mult": 3.0, "exit_horizon_mult": 3.33,
                   "exit_mode": "cross", "cross_exit_frac": 0.75,
                   "base_notional": 1000.0},

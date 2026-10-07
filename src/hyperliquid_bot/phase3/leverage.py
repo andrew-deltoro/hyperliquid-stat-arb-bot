@@ -85,7 +85,7 @@ def exit_policy_from_cfg(cfg, half_life_bars: float, beta: float,
 
 
 def simulate_trade_returns(
-    current_spread: float,
+    current_spread: float | np.ndarray,
     kappa_post: np.ndarray,
     sigma_post: np.ndarray,
     nu_post: np.ndarray,
@@ -95,30 +95,46 @@ def simulate_trade_returns(
     stress_quantile: float = 0.01,
     seed: int | None = 0,
 ) -> TradeDistribution:
+    """
+    Simulate net trade returns under `policy`.
+
+    `current_spread` may be a scalar or a per-posterior-draw array. An array
+    propagates beta (and other) uncertainty into the entry level, stop, and
+    target — required when the OU and cointegrating residual are fit jointly.
+    """
     rng = np.random.default_rng(seed)
     kappa_post = np.asarray(kappa_post, dtype=float)
-    idx = np.tile(np.arange(len(kappa_post)), paths_per_draw)
+    n_draws = len(kappa_post)
+    s0_draws = np.asarray(current_spread, dtype=float)
+    if s0_draws.ndim == 0:
+        s0_draws = np.full(n_draws, float(s0_draws))
+    if len(s0_draws) != n_draws:
+        raise ValueError("current_spread length must match posterior draws")
+
+    idx = np.tile(np.arange(n_draws), paths_per_draw)
     if len(idx) > max_paths:
         idx = rng.choice(idx, size=max_paths, replace=False)
     k = kappa_post[idx]
     sig = np.asarray(sigma_post, dtype=float)[idx]
     nu = np.asarray(nu_post, dtype=float)[idx]
+    s0 = s0_draws[idx]
     n = len(idx)
 
-    s0 = float(current_spread)
-    # Long the spread when it is below its mean (matches signals.direction).
-    direction = 1.0 if s0 < 0 else -1.0
-    s = np.full(n, s0)
+    # Trade direction from the posterior-mean entry spread (same rule as
+    # signals.direction); paths keep their own s0 for exits.
+    mean_s0 = float(s0_draws.mean())
+    direction = 1.0 if mean_s0 < 0 else -1.0
+    s = s0.copy()
     exit_s = np.full(n, np.nan)
     held = np.full(n, policy.horizon_bars, dtype=float)
     open_ = np.ones(n, dtype=bool)
-    best = np.full(n, s0)
+    best = s0.copy()
 
     stop_level = policy.stop_mult * s0
     cross_level = -policy.cross_frac * s0
     target_level = policy.target_frac * s0
-    trail_dist = policy.trail_frac * abs(s0)
-    activation = policy.trail_activation_frac * abs(s0)
+    trail_dist = policy.trail_frac * np.abs(s0)
+    activation = policy.trail_activation_frac * np.abs(s0)
 
     for t in range(1, policy.horizon_bars + 1):
         s = (1.0 - k) * s + rng.standard_t(nu) * sig
