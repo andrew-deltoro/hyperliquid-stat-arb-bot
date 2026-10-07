@@ -85,10 +85,25 @@ def load_or_fetch_cache(lookback_hours, interval, ttl_hours):
     for i, coin in enumerate(universe):
         if i % 20 == 0:
             print(f"  [{i}/{len(universe)}]...")
-        c = fetch_candles(coin, interval, lookback_hours)
-        if c and len(c) >= DEFAULT_MIN_BARS:
-            prices[coin] = c
-        time.sleep(0.05)
+        # Rate limit: HL throttles ~20 req/min. Use 3s between requests.
+        # On 429, back off exponentially. Successful fetches also sleep.
+        import time as _t
+        max_retries = 5
+        backoff = 3.0
+        for attempt in range(max_retries):
+            try:
+                c = fetch_candles(coin, interval, lookback_hours)
+                if c and len(c) >= DEFAULT_MIN_BARS:
+                    prices[coin] = c
+                break
+            except Exception as e:
+                if "429" in str(e) or "Too Many Requests" in str(e):
+                    _t.sleep(backoff)
+                    backoff *= 2
+                    continue
+                print(f"    fetch error {coin}: {e}")
+                break
+        _t.sleep(3.0)
 
     with open(cache_file, "wb") as f:
         pickle.dump(prices, f)
