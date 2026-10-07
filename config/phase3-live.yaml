@@ -58,7 +58,7 @@ signal:
   kalman_r: 0.0001
 position:
   base_notional: 2500.0
-  baseline_balance: 3105.0
+  baseline_balance: 1035.0
   compounding_enabled: true
   scale_safeguards: true
   target_frac: 0.75
@@ -72,7 +72,7 @@ position:
   beta_shift_max: 0.2
 risk:
   max_concurrent_positions: 10
-  max_total_notional: 2000.0
+  max_total_notional: 6000.0
   cluster_caps:
     btc_eth: 250.0
     alt_l1: 300.0
