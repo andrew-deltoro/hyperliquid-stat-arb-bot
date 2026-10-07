@@ -46,3 +46,4 @@ hlbot-status.sh
 !state/.gitkeep
 !logs/.gitkeep
 !reports/.gitkeep
+reports/.trend_cache/
