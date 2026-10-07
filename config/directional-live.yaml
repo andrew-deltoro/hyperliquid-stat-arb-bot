@@ -1,0 +1,18 @@
+directional:
+  universe:
+    - BTC
+    - SOL
+  leverage: 1.0
+  max_concurrent_positions: 2
+  max_notional_per_position: 500.0
+  min_equity: 100.0
+  # Reserve only what pairs bot needs for maintenance (~$150) plus buffer.
+  # Directional has a fixed budget of $500 regardless of account size.
+  pairs_maintenance_reserve_usd: 300.0
+  directional_budget_usd: 500.0
+
+executor:
+  network: mainnet
+  private_key_env: HL_PRIVATE_KEY_MAINNET
+  account_address_env: HL_ACCOUNT_ADDRESS_MAINNET
+  slippage_tolerance: 0.015
