@@ -56,11 +56,19 @@ signal:
   kalman_enabled: true
   kalman_q: 1.0e-05
   kalman_r: 0.0001
+  kalman_alpha_max_sd: 3.0
+  # Engle-Granger residual test at this level (0.01 / 0.05 / 0.10); null disables.
+  stationarity_level: 0.10
+  # Minimum posterior-predictive E[net trade return] per unit notional.
+  min_expected_return: 0.0
 position:
+  # base_notional / baseline_balance / compounding only apply when
+  # leverage.mode is not "kelly".
   base_notional: 2500.0
   baseline_balance: 1035.0
   compounding_enabled: true
-  scale_safeguards: true
+  scale_safeguards: false
+  dry_run_balance: 3100.0
   target_frac: 0.75
   use_trailing_stop: true
   exit_mode: cross
@@ -72,13 +80,42 @@ position:
   beta_shift_max: 0.2
 risk:
   max_concurrent_positions: 10
-  max_total_notional: 6000.0
+  # Gross leg notional (|leg A| + |leg B|) across open pairs.
+  max_total_notional: 4650.0
+  # Gross leg notional per cluster; each leg counts toward its own coin's cluster.
   cluster_caps:
-    btc_eth: 250.0
-    alt_l1: 300.0
-    defi: 300.0
-    oracle: 200.0
-    meme: 150.0
+    btc_eth: 1200.0
+    alt_l1: 1200.0
+    defi: 1000.0
+    oracle: 600.0
+    meme: 800.0
+    xyz_semis: 900.0
+    xyz_metals: 700.0
+  max_coin_gross_usd: 700.0
+# Position sizing and leverage (src/hyperliquid_bot/phase3/leverage.py).
+# N = equity * min(kelly_fraction * f* / (1 + (K-1) rho), max_trade_notional_frac),
+# then capped by max_gross_leverage and a joint stress test per dex.
+leverage:
+  mode: kelly
+  kelly_fraction: 0.25
+  assumed_pair_correlation: 0.3
+  max_trade_notional_frac: 0.15
+  max_gross_leverage: 1.5
+  stress_quantile: 0.01
+  stress_margin_buffer: 1.5
+  default_stress_loss_frac: 0.05
+  default_max_leverage: 3
+  exchange_leverage: 3
+  isolated_leverage: 2
+  cycle_hours: 4
+  # Assumed net funding carry on gross notional; refine from funding history.
+  funding_bps_per_hour: 0.1
+  calibration_prior_mean: 0.5
+  calibration_prior_sd: 0.25
+  min_leg_usd: 11.0
+  dry_run_dex_split:
+    '': 0.8
+    xyz: 0.2
 executor:
   mode: live
   private_key_env: HL_PRIVATE_KEY_MAINNET
@@ -87,9 +124,12 @@ executor:
   slippage_tolerance: 0.01
   prefer_maker: true
   maker_timeout_sec: 30
+# Fixed account limits, independent of sizing. Review by hand when equity
+# changes; they are not scaled automatically.
 safeguards:
-  max_notional_per_order: 350.0
-  max_total_exposure_usd: 2500.0
+  max_notional_per_order: 500.0
+  max_total_exposure_usd: 4650.0
+  # Opening orders only; reduce-only closes don't count.
   max_daily_orders: 10
 fees:
   taker_fee_pct: 0.00045

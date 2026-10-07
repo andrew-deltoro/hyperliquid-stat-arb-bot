@@ -29,11 +29,11 @@ def main():
     print(f"  sigma: {fit.sigma_mean:.5f} ± {fit.sigma_sd:.5f}")
     print(f"  nu:    {fit.nu_mean:.2f}    (Student-t dof; low = fat tails)")
     print(f"  converged: {fit.converged}")
-    print(f"  WAIC: {fit.waic:.2f}")
+    print(f"  deviance (-2 lppd, unpenalized): {fit.deviance:.2f}")
 
     print("\nFitting null model...")
     null_waic = fit_null_model(log_a)
-    delta = fit.waic - null_waic
+    delta = fit.deviance - null_waic
     print(f"  null WAIC: {null_waic:.2f}")
     print(f"  ΔWAIC:     {delta:+.2f}   (negative = cointegration wins)")
 

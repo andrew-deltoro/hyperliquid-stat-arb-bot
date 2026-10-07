@@ -1,15 +1,19 @@
 """Main cycle: generate signals, manage positions, log everything."""
 from __future__ import annotations
 
+import fcntl
+import os
 from pathlib import Path
 
+from ..data import ohlcv
 from ..data.ohlcv import aligned_close_prices
 from ..data.ohlcv import fetch_candles
 from .config import load_config
 from .signals import generate_signal
 from .positions import PositionManager
-from .executor import build_executor
+from .executor import _dex_of, build_executor
 from . import journal
+from .leverage import TradeDistribution, calibration_factor, size_trade
 from .scaler import PositionScaler
 
 
@@ -20,19 +24,19 @@ def _log(msg: str, fh=None):
         fh.write(msg + "\n")
         fh.flush()
 
-def _get_btc_vol_24h() -> float:
-    """Compute annualized 24h realized vol of BTC."""
+def _get_btc_vol_24h() -> float | None:
+    """Annualized 24h realized vol of BTC, or None if it can't be computed."""
     import numpy as np
     try:
         candles = fetch_candles("BTC", interval="1h", lookback_hours=48)
         closes = np.array([c.c for c in candles])
         if len(closes) < 25:
-            return 0.0
+            return None
         returns = np.diff(np.log(closes))
         last_24 = returns[-24:]
         return float(last_24.std() * np.sqrt(24 * 365))
     except Exception:
-        return 0.0
+        return None
 
 def _log_to_fh(fh):
     def _fn(msg):
@@ -40,8 +44,83 @@ def _log_to_fh(fh):
     return _fn
 
 
+def _acquire_cycle_lock():
+    """Exclusive lock on the runtime dir; None if another cycle holds it."""
+    from .paths import RUNTIME_DIR
+    fh = open(RUNTIME_DIR / ".cycle.lock", "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.close()
+        return None
+    return fh
+
+
+def _size_for_book(sig, pm, executor, equity, account_gross, calibration,
+                   cfg) -> tuple[float, str]:
+    """Kelly/stress-constrained pair notional for `sig` given the open book."""
+    lev = dict(cfg.raw.get("leverage", {}) or {})
+    lev.setdefault("max_concurrent_positions", cfg.risk["max_concurrent_positions"])
+    dex = _dex_of(sig.coin_a)
+    dex_equity = float(equity.get(dex, 0.0))
+    if dex_equity <= 0:
+        return 0.0, f"no equity on dex {dex or 'main'}"
+    dist = TradeDistribution(
+        returns=sig.trade_returns, exp_return=sig.exp_return,
+        p_win=sig.p_revert, stress_loss_frac=sig.stress_loss_frac,
+        mean_bars_held=0.0,
+    )
+    decision = size_trade(
+        dist=dist, beta=sig.beta,
+        book=pm.book_exposure(dex, dex_equity),
+        account_gross=max(account_gross, pm.total_open_notional()),
+        account_equity=sum(equity.values()),
+        maint_frac_a=executor.maintenance_frac(sig.coin_a),
+        maint_frac_b=executor.maintenance_frac(sig.coin_b),
+        calibration=calibration,
+        cfg_lev=lev,
+    )
+    notional, binding = decision.notional, decision.binding
+
+    # Never size past what the per-order safeguard will accept on either leg.
+    sg = cfg.raw.get("safeguards", {}) or {}
+    per_order = float(sg.get("max_notional_per_order", float("inf")))
+    sg_cap = 0.98 * 2.0 * per_order / max(1.0, sig.beta)
+    if sg_cap < notional:
+        notional, binding = sg_cap, "safeguard_per_order"
+
+    # Hyperliquid's minimum order value is $10 per leg (with headroom).
+    min_leg = float(lev.get("min_leg_usd", 11.0))
+    if notional / 2.0 * min(1.0, sig.beta) < min_leg:
+        return 0.0, f"below minimum leg size ({binding})"
+    detail = " ".join(f"{k}={v}" for k, v in decision.detail.items())
+    return notional, (f"f*={decision.kelly_f:.2f} c={calibration:.2f} "
+                      f"binding={binding} [{detail}]")
+
+
 def run_cycle(config_path=None, log_path=None):
     cfg = load_config(config_path)
+    ex_cfg = cfg.raw.get("executor", {}) or {}
+
+    if ex_cfg.get("mode") == "live" and not os.getenv("HLBOT_RUNTIME_DIR", "").strip():
+        raise RuntimeError(
+            "live mode requires HLBOT_RUNTIME_DIR so state isn't split "
+            "between the repo and the runtime directory"
+        )
+
+    lock = _acquire_cycle_lock()
+    if lock is None:
+        print("[CYCLE] another cycle is running on this runtime dir; exiting")
+        return None
+
+    try:
+        return _run_cycle(cfg, ex_cfg, log_path)
+    finally:
+        lock.close()
+
+
+def _run_cycle(cfg, ex_cfg, log_path):
+    ohlcv.configure(ex_cfg.get("network", "mainnet"))
 
     if log_path is None:
         from datetime import datetime
@@ -50,33 +129,21 @@ def run_cycle(config_path=None, log_path=None):
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_path = LOGS_DIR / f"cycle_{stamp}.log"
 
+    lev_cfg = cfg.raw.get("leverage", {}) or {}
+    kelly_mode = lev_cfg.get("mode") == "kelly"
+
     with open(log_path, "w") as fh:
         _log(f"=== Cycle start: {log_path.name} ===", fh)
         _log(f"Pairs: {cfg.pairs}", fh)
 
-        # Compounding: scale position sizes by current balance
-        scaler = PositionScaler(cfg, log_fn=_log_to_fh(fh))
-        scale_result = scaler.refresh()
-
-        # Scale safeguards only when balance GROWS (scale > 1).
-        # When balance shrinks, notional is already scaled down;
-        # we don't need to tighten the safeguard further.
-        if scale_result.enabled and cfg.position.get("scale_safeguards", True):
-            sg = cfg.raw.get("safeguards", {})
-            safeguard_scale = max(1.0, scale_result.scale)
-            sg["max_notional_per_order"] = (
-                sg.get("max_notional_per_order", 100.0) * safeguard_scale
-            )
-            sg["max_total_exposure_usd"] = (
-                sg.get("max_total_exposure_usd", 500.0) * safeguard_scale
-            )
-            _log(
-                f"[SCALER] safeguard_scale={safeguard_scale:.3f} → "
-                f"${sg['max_notional_per_order']:.2f}/order, "
-                f"${sg['max_total_exposure_usd']:.2f} exposure",
-                fh,
-            )
-
+        scaler = None
+        if not kelly_mode:
+            # Compounding: scale position sizes by current balance
+            scaler = PositionScaler(cfg, log_fn=_log_to_fh(fh))
+            scaler.refresh()
+        if cfg.position.get("scale_safeguards"):
+            _log("[SAFEGUARDS] scale_safeguards is ignored: safeguard caps are "
+                 "fixed account limits", fh)
 
         executor = build_executor(cfg, log_fn=print)
 
@@ -103,24 +170,35 @@ def run_cycle(config_path=None, log_path=None):
         # Compute BTC vol for regime filter
         btc_vol = _get_btc_vol_24h()
         max_vol = cfg.signal.get("max_btc_vol", 1.0)
-        vol_status = "OK" if btc_vol <= max_vol else "HIGH — will skip entries"
-        _log(
-            f"BTC 24h vol: {btc_vol*100:.1f}% "
-            f"(threshold {max_vol*100:.0f}%) — {vol_status}",
-            fh,
-        )
+        if btc_vol is None:
+            _log("BTC 24h vol: unavailable — will skip entries", fh)
+        else:
+            vol_status = "OK" if btc_vol <= max_vol else "HIGH — will skip entries"
+            _log(
+                f"BTC 24h vol: {btc_vol*100:.1f}% "
+                f"(threshold {max_vol*100:.0f}%) — {vol_status}",
+                fh,
+            )
 
         signals = {}
+        prices = {}
         for a, b in cfg.pairs:
             pair = f"{a}/{b}"
             _log(f"[{pair}] fitting...", fh)
             try:
+                _, ca, cb = aligned_close_prices(
+                    a, b,
+                    interval=cfg.data["interval"],
+                    lookback_hours=cfg.data["lookback_hours"],
+                )
+                prices[pair] = (float(ca[-1]), float(cb[-1]))
                 sig = generate_signal(
                     a, b, cfg,
                     kappa_prior_pop=kp,
                     kappa_prior_pop_sd=kp_sd,
                     scaler=scaler,
                     btc_vol=btc_vol,
+                    prices=(ca, cb),
                 )
             except Exception as e:
                 _log(f"[{pair}] FAILED: {type(e).__name__}: {e}", fh)
@@ -129,15 +207,17 @@ def run_cycle(config_path=None, log_path=None):
             signals[pair] = sig
             journal.log_signal(sig)
             _log(
-                f"[{pair}] beta={sig.beta:+.3f} "
+                f"[{pair}] beta={sig.beta:+.3f}±{sig.beta_sd:.3f} "
                 f"nu_c={sig.nu_coint:.1f} "
                 f"z={sig.z:+.2f} "
+                f"EG_t={sig.eg_tstat:+.2f} "
                 f"HL={sig.half_life_hours:.1f}h "
                 f"nu_ou={sig.nu_ou:.1f} "
-                f"P={sig.p_revert:.3f} "
-                f"edge={sig.edge:+.3f} "
-                f"notional=${sig.notional:.2f} "
-                f"→ {sig.action}",
+                f"P(win)={sig.p_revert:.3f} "
+                f"E[r]={sig.exp_return*100:+.3f}% "
+                f"stress={sig.stress_loss_frac*100:.2f}% "
+                f"→ {sig.action}"
+                f"{' (' + sig.skip_reason + ')' if sig.skip_reason else ''}",
                 fh,
             )
 
@@ -151,20 +231,27 @@ def run_cycle(config_path=None, log_path=None):
             pair = pos["pair"]
             a, b = pos["coin_a"], pos["coin_b"]
 
-            try:
-                _, ca, cb = aligned_close_prices(
-                    a, b,
-                    interval=cfg.data["interval"],
-                    lookback_hours=24,
-                )
-                price_a, price_b = float(ca[-1]), float(cb[-1])
-            except Exception as e:
-                _log(f"[{pair}] fetch failed: {e}", fh)
-                continue
+            if pair in prices:
+                price_a, price_b = prices[pair]
+            else:
+                try:
+                    _, ca, cb = aligned_close_prices(
+                        a, b,
+                        interval=cfg.data["interval"],
+                        lookback_hours=24,
+                        validate=False,
+                    )
+                    price_a, price_b = float(ca[-1]), float(cb[-1])
+                except Exception as e:
+                    _log(f"[{pair}] fetch failed: {e}", fh)
+                    continue
 
-            fresh_beta = signals[pair].beta if pair in signals else None
-            result = pm.evaluate_open(pair, price_a, price_b,
-                                      fresh_beta=fresh_beta)
+            fresh = signals.get(pair)
+            result = pm.evaluate_open(
+                pair, price_a, price_b,
+                fresh_beta=fresh.beta if fresh else None,
+                fresh_beta_sd=fresh.beta_sd if fresh else None,
+            )
 
             if result["action"] == "closed":
                 _log(f"[{pair}] ✅ CLOSED: {result['reason']} "
@@ -182,32 +269,58 @@ def run_cycle(config_path=None, log_path=None):
 
         # ---------- 3. Open new positions ----------
         _log("--- Opening new positions ---", fh)
+        equity = account_gross = None
+        calibration = 1.0
         if not exchange_ok:
             _log("Skipping entries: exchange position state unavailable", fh)
             signals = {}
-        for pair, sig in signals.items():
+        elif kelly_mode:
+            equity = executor.account_equity()
+            account_gross = executor.account_gross()
+            if equity is None or account_gross is None:
+                _log("Skipping entries: account equity/exposure unavailable", fh)
+                signals = {}
+            else:
+                pred, real = journal.calibration_pairs()
+                calibration = calibration_factor(
+                    pred, real,
+                    prior_mean=float(lev_cfg.get("calibration_prior_mean", 0.5)),
+                    prior_sd=float(lev_cfg.get("calibration_prior_sd", 0.25)),
+                )
+                _log(f"[LEVERAGE] equity={ {k or 'main': round(v, 2) for k, v in equity.items()} } "
+                     f"gross=${account_gross:.2f} "
+                     f"gross_leverage={account_gross / max(sum(equity.values()), 1e-9):.2f}x "
+                     f"calibration c={calibration:.2f} (n={len(pred)} trades)", fh)
+
+        ranked = sorted(signals.items(), key=lambda kv: -kv[1].exp_return)
+        for pair, sig in ranked:
             if sig is None or sig.action != "OPEN":
                 continue
-            try:
-                _, ca, cb = aligned_close_prices(
-                    sig.coin_a, sig.coin_b,
-                    interval=cfg.data["interval"],
-                    lookback_hours=24,
-                )
-                price_a, price_b = ca[-1], cb[-1]
-            except Exception as e:
-                _log(f"[{pair}] open fetch failed: {e}", fh)
+            if pm.find_open(pair) is not None:
+                _log(f"[{pair}] already open", fh)
                 continue
+            price_a, price_b = prices[pair]
+
+            if kelly_mode:
+                notional, why = _size_for_book(
+                    sig, pm, executor, equity, account_gross, calibration, cfg)
+                _log(f"[{pair}] sizing: N=${notional:.2f} {why}", fh)
+                if notional <= 0:
+                    continue
+                sig.notional = notional
 
             result = pm.try_open(sig, price_a, price_b)
             if result["opened"]:
                 _log(f"[{pair}] ✅ OPENED "
                      f"notional=${result['position']['notional_usd']:.2f}", fh)
+                if account_gross is not None:
+                    p = result["position"]
+                    account_gross += abs(p["leg_a_usd"]) + abs(p["leg_b_usd"])
             else:
                 _log(f"[{pair}] ✗ not opened: {result['reason']}", fh)
 
         _log("", fh)
         _log(f"Cycle end. Open positions: {pm.open_count()}", fh)
-        _log(f"Total notional: ${pm.total_open_notional():.2f}", fh)
+        _log(f"Gross open notional: ${pm.total_open_notional():.2f}", fh)
 
     return log_path

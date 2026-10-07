@@ -8,6 +8,9 @@ Daily cycle:
   1. Evaluate existing positions (stop, target, time, signal flip)
   2. Open new positions from signals
   3. Persist state
+
+The stop also rests on the exchange as a reduce-only trigger order, so it
+fires between daily cycles.
 """
 from __future__ import annotations
 import json
@@ -38,6 +41,7 @@ class DirPosition:
     exit_iso: str | None = None
     exit_reason: str | None = None
     pnl_usd: float | None = None
+    stop_oid: int | None = None
 
 
 class DirPositionManager:
@@ -85,12 +89,20 @@ class DirPositionManager:
         if self.open_count() >= max_concurrent:
             return {"opened": False, "reason": "max_concurrent"}
 
+        # The account nets each coin: if another strategy holds it, a
+        # directional trade would partly offset that position instead.
+        live = self.executor.get_position(sig.coin)
+        if live is None:
+            return {"opened": False, "reason": "live position unknown"}
+        if live != 0:
+            return {"opened": False, "reason": f"coin held by another strategy (szi={live})"}
+
+        # suggested_notional is at 1x; leverage is applied here only.
         notional = min(sig.suggested_notional * leverage, max_notional_per_pos)
         if notional < 10:
             return {"opened": False, "reason": f"notional_too_small={notional:.2f}"}
 
         is_buy = sig.direction == "LONG"
-        # HL contracts: for BTC, size = notional / price
         size_contracts = notional / sig.close
 
         ref_px = self.executor.get_mid(sig.coin) or sig.close
@@ -112,6 +124,12 @@ class DirPositionManager:
             stop_price=sig.stop_price, target_price=sig.target_price,
             time_stop_iso=time_stop.isoformat(),
         )
+        stop = self.executor.place_stop(sig.coin, not is_buy, size_filled, sig.stop_price)
+        if stop.get("status") == "error":
+            self.log_fn(f"[DIR-OPEN] {sig.coin}: exchange stop failed "
+                        f"({stop.get('error')}); stop is cycle-checked only")
+        else:
+            pos.stop_oid = stop.get("oid")
         self.positions.append(asdict(pos))
         self._save()
         return {"opened": True, "position": asdict(pos)}
@@ -123,6 +141,12 @@ class DirPositionManager:
             return {"action": "no_position"}
 
         long = pos["direction"] == "LONG"
+
+        live = self.executor.get_position(coin)
+        if live is not None and (live == 0 or (live > 0) != long):
+            # The exchange stop (or something else) already flattened it.
+            return self._mark_closed(pos, pos["stop_price"], "exchange_stop")
+
         # Stop / target check
         if long and current_px <= pos["stop_price"]:
             return self._close(pos, current_px, "stop")
@@ -151,14 +175,32 @@ class DirPositionManager:
                 "position": pos}
 
     def _close(self, pos: dict, exit_px: float, reason: str) -> dict:
-        is_buy_close = pos["direction"] == "SHORT"
+        long = pos["direction"] == "LONG"
+        live = self.executor.get_position(pos["coin"])
+        if live is None:
+            return {"action": "close_failed", "error": "live position unknown"}
+        # Close only this strategy's quantity, never more than is held.
+        size = min(abs(pos["size"]), abs(live)) if (live > 0) == long else 0.0
+        if size <= 0:
+            return self._mark_closed(pos, exit_px, f"{reason}_already_flat")
+
         ref_px = self.executor.get_mid(pos["coin"]) or exit_px
-        result = self.executor.market_close(pos["coin"], pos["size"], ref_px)
+        result = self.executor.reduce(pos["coin"], not long, size, ref_px)
         if result.get("status") != "filled":
             self.log_fn(f"[DIR-CLOSE] {pos['coin']} failed: {result.get('error')} — will retry next cycle")
             return {"action": "close_failed", "error": result.get("error")}
 
-        fill_px = float(result.get("avg_px") or ref_px)
+        filled = float(result.get("total_sz") or 0.0)
+        if filled < size * 0.95:
+            pos["size"] = abs(pos["size"]) - filled
+            self._save()
+            return {"action": "close_failed",
+                    "error": f"partial close {filled}/{size}; will retry"}
+        return self._mark_closed(pos, float(result.get("avg_px") or ref_px), reason)
+
+    def _mark_closed(self, pos: dict, fill_px: float, reason: str) -> dict:
+        if not self.executor.cancel_stops(pos["coin"]):
+            self.log_fn(f"[DIR-CLOSE] {pos['coin']}: could not confirm stop cancel")
         long = pos["direction"] == "LONG"
         pnl = ((fill_px - pos["entry_price"]) / pos["entry_price"]
                * (1 if long else -1) * pos["notional"])

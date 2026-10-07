@@ -3,29 +3,35 @@ Minimal HL executor for single-leg perp orders.
 
 Reuses the live SDK pattern from the pairs executor but is stripped down:
   - One leg at a time (no rollback logic)
-  - Market orders with slippage tolerance
-  - Optional stop-loss trigger order on the exchange
+  - IOC orders with slippage tolerance; closes are reduce-only for this
+    strategy's own quantity (the account nets coins across strategies)
+  - Reduce-only stop-loss trigger order resting on the exchange
 """
 from __future__ import annotations
+import math
 import os
-from datetime import datetime, timezone
-
-from eth_account import Account
-from hyperliquid.exchange import Exchange
-from hyperliquid.info import Info
-from hyperliquid.utils import constants
 
 
 class DirectionalExecutor:
-    def __init__(self, cfg, log_fn=print):
+    def __init__(self, cfg, log_fn=print, exchange=None, info=None, wallet=None):
         self.cfg = cfg
         self.log_fn = log_fn
 
         ex_cfg = cfg.raw.get("executor", {})
         network = ex_cfg.get("network", "mainnet")
+        self.slippage = float(ex_cfg.get("slippage_tolerance", 0.01))
+
+        if exchange is not None and info is not None:
+            self.exchange, self.info, self.wallet = exchange, info, wallet or ""
+            return
+
+        from eth_account import Account
+        from hyperliquid.exchange import Exchange
+        from hyperliquid.info import Info
+        from hyperliquid.utils import constants
+
         self.base_url = (constants.MAINNET_API_URL if network == "mainnet"
                          else constants.TESTNET_API_URL)
-
         pk = os.getenv(ex_cfg.get("private_key_env", "HL_PRIVATE_KEY_MAINNET"))
         wallet = os.getenv(ex_cfg.get("account_address_env",
                                        "HL_ACCOUNT_ADDRESS_MAINNET"))
@@ -36,41 +42,90 @@ class DirectionalExecutor:
         self.exchange = Exchange(account, self.base_url,
                                  account_address=wallet, perp_dexs=[""])
         self.info = Info(self.base_url, skip_ws=True, perp_dexs=[""])
-        self.slippage = float(ex_cfg.get("slippage_tolerance", 0.01))
 
         self.log_fn(f"[DIR-EXECUTOR] network={network} "
                     f"account={wallet[:10]}...")
 
     def _round_sz(self, coin: str, sz: float) -> float:
-        meta = self.info.meta()
-        for a in meta.get("universe", []):
-            if a["name"] == coin:
-                dec = int(a.get("szDecimals", 2))
-                return round(sz, dec)
-        return round(sz, 2)
+        asset = self.info.coin_to_asset.get(coin)
+        if asset is None:
+            raise ValueError(f"unknown asset {coin}")
+        dec = int(self.info.asset_to_sz_decimals[asset])
+        scale = 10 ** dec
+        return round(math.floor(sz * scale + 1e-9) / scale, dec)
+
+    def get_position(self, coin: str) -> float | None:
+        try:
+            state = self.info.user_state(self.wallet)
+        except Exception as e:
+            self.log_fn(f"[DIR-EXECUTOR] position query failed: {e}")
+            return None
+        for p in state.get("assetPositions", []):
+            pos = p.get("position", {})
+            if pos.get("coin") == coin:
+                return float(pos.get("szi", 0))
+        return 0.0
+
+    def _ioc(self, coin: str, is_buy: bool, size: float, ref_px: float,
+             reduce_only: bool) -> dict:
+        try:
+            size = self._round_sz(coin, size)
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+        if size <= 0:
+            return {"status": "error", "error": "size rounds to zero"}
+        try:
+            px = self.exchange._slippage_price(coin, is_buy, self.slippage, ref_px)
+            r = self.exchange.order(coin, is_buy, size, px,
+                                    {"limit": {"tif": "Ioc"}},
+                                    reduce_only=reduce_only)
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+        return self._parse(r)
 
     def market_open(self, coin: str, is_buy: bool, size: float,
                     ref_px: float) -> dict:
-        size = self._round_sz(coin, size)
-        if size <= 0:
-            return {"status": "error", "error": "size rounds to zero"}
+        return self._ioc(coin, is_buy, size, ref_px, reduce_only=False)
+
+    def reduce(self, coin: str, is_buy: bool, size: float, ref_px: float) -> dict:
+        return self._ioc(coin, is_buy, size, ref_px, reduce_only=True)
+
+    def place_stop(self, coin: str, is_buy: bool, size: float,
+                   trigger_px: float) -> dict:
+        """Reduce-only stop-market trigger order resting on the exchange."""
         try:
-            r = self.exchange.market_open(coin, is_buy, size,
-                                           ref_px, self.slippage)
+            size = self._round_sz(coin, size)
+            trig = self.exchange._slippage_price(coin, is_buy, 0.0, trigger_px)
+            limit = self.exchange._slippage_price(coin, is_buy, self.slippage, trigger_px)
+            r = self.exchange.order(
+                coin, is_buy, size, limit,
+                {"trigger": {"triggerPx": trig, "isMarket": True, "tpsl": "sl"}},
+                reduce_only=True,
+            )
         except Exception as e:
             return {"status": "error", "error": str(e)}
         return self._parse(r)
 
-    def market_close(self, coin: str, size: float, ref_px: float) -> dict:
-        size = self._round_sz(coin, size)
-        if size <= 0:
-            return {"status": "error", "error": "size rounds to zero"}
+    def cancel(self, coin: str, oid) -> bool:
         try:
-            r = self.exchange.market_close(coin, size, None, ref_px,
-                                            self.slippage)
+            r = self.exchange.cancel(coin, int(oid))
         except Exception as e:
-            return {"status": "error", "error": str(e)}
-        return self._parse(r)
+            self.log_fn(f"[DIR-EXECUTOR] cancel {coin} oid={oid} failed: {e}")
+            return False
+        return isinstance(r, dict) and r.get("status") == "ok"
+
+    def cancel_stops(self, coin: str) -> bool:
+        """Cancel every reduce-only trigger order resting on `coin`."""
+        try:
+            orders = self.info.frontend_open_orders(self.wallet)
+        except Exception as e:
+            self.log_fn(f"[DIR-EXECUTOR] open-order query failed: {e}")
+            return False
+        ok = True
+        for o in orders:
+            if o.get("coin") == coin and o.get("isTrigger") and o.get("reduceOnly"):
+                ok &= self.cancel(coin, o["oid"])
+        return ok
 
     @staticmethod
     def _parse(result) -> dict:
@@ -84,6 +139,10 @@ class DirectionalExecutor:
         if not statuses:
             return {"status": "error", "error": "no statuses"}
         s0 = statuses[0]
+        if s0 == "waitingForTrigger" or (isinstance(s0, dict) and "waitingForTrigger" in s0):
+            return {"status": "resting", "oid": None}
+        if not isinstance(s0, dict):
+            return {"status": "error", "error": f"unknown: {s0}"}
         if "error" in s0:
             return {"status": "error", "error": s0["error"]}
         if "filled" in s0:

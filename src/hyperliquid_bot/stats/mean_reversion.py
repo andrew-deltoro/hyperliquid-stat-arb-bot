@@ -126,6 +126,7 @@ def simulate_reversion_probability(
     horizon: int = 24,
     target_frac: float = 0.5,
     paths_per_sample: int = 5,
+    seed: int | None = 0,
 ) -> float:
     """
     Posterior predictive probability that the spread reverts to within
@@ -147,10 +148,11 @@ def simulate_reversion_probability(
 
     S_t = np.full(n_total, current_spread, dtype=float)
     hit = np.zeros(n_total, dtype=bool)
+    rng = np.random.default_rng(seed)
 
     for _ in range(horizon):
         # Student-t innovations
-        eps = np.random.standard_t(nu_p) * sig
+        eps = rng.standard_t(nu_p) * sig
         S_t = (1 - k) * S_t + eps
         hit = hit | (np.abs(S_t) < target_abs)
 

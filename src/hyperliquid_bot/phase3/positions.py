@@ -5,9 +5,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from .state import Position, State, load_state, save_state, now_iso
 from .signals import Signal
-from .executor import BaseExecutor, Fill, Order, build_executor
+from .executor import BaseExecutor, Fill, Order, _dex_of, build_executor
 from . import journal
 from .correlation_guard import CorrelationGuard
+from .leverage import BookExposure
 
 
 # A leg counts as filled when at least this fraction of the requested size
@@ -41,8 +42,12 @@ class PositionManager:
         self.executor = executor or build_executor(cfg, log_fn=log_fn)
 
         # Correlation guard
-        cluster_caps = cfg.raw.get("risk", {}).get("cluster_caps", {}) or {}
-        self.correlation_guard = CorrelationGuard(cluster_caps=cluster_caps)
+        risk = cfg.raw.get("risk", {}) or {}
+        coin_cap = risk.get("max_coin_gross_usd")
+        self.correlation_guard = CorrelationGuard(
+            cluster_caps=risk.get("cluster_caps", {}) or {},
+            max_coin_gross=float(coin_cap) if coin_cap is not None else None,
+        )
 
 
     # ---------------- helpers ----------------
@@ -56,10 +61,33 @@ class PositionManager:
         return [p for p in self.state.positions if p["status"] == "needs_review"]
 
     def total_open_notional(self) -> float:
+        """Gross leg notional of open positions."""
         return sum(
-            p["notional_usd"] for p in self.state.positions
-            if p["status"] == "open"
+            abs(p["leg_a_usd"]) + abs(p["leg_b_usd"])
+            for p in self.state.positions if p["status"] == "open"
         )
+
+    def book_exposure(self, dex: str, equity: float) -> BookExposure:
+        """Open book on one dex, for the stress-sizing constraint."""
+        default_stress = float(
+            (self.cfg.raw.get("leverage", {}) or {}).get("default_stress_loss_frac", 0.05))
+        book = BookExposure(equity=equity)
+        for p in self.state.positions:
+            if p["status"] not in ("open", "needs_review") or "leg_a_usd" not in p:
+                continue
+            on_dex = False
+            for leg in ("a", "b"):
+                coin = p[f"coin_{leg}"]
+                if _dex_of(coin) != dex:
+                    continue
+                on_dex = True
+                g = abs(p[f"leg_{leg}_usd"])
+                book.gross += g
+                book.maintenance += g * self.executor.maintenance_frac(coin)
+            if on_dex:
+                book.stress_loss += p["notional_usd"] * float(
+                    p.get("stress_loss_frac", default_stress))
+        return book
 
     def open_count(self) -> int:
         return sum(
@@ -222,10 +250,17 @@ class PositionManager:
                     )
                     return {"opened": False, "reason": f"live_exposure: {coin}"}
 
+        if sig.beta <= 0:
+            return {"opened": False, "reason": f"non-positive beta {sig.beta:.3f}"}
+
+        if _dex_of(sig.coin_a) != _dex_of(sig.coin_b):
+            return {"opened": False, "reason": "legs on different dexes"}
+
         if self.open_count() >= self.cfg.risk["max_concurrent_positions"]:
             return {"opened": False, "reason": "max concurrent positions"}
 
-        if self.total_open_notional() + sig.notional > self.cfg.risk["max_total_notional"]:
+        new_gross = sig.notional / 2.0 * (1.0 + sig.beta)
+        if self.total_open_notional() + new_gross > self.cfg.risk["max_total_notional"]:
             return {"opened": False, "reason": "max total notional"}
 
         # Correlation guard: prevent correlated clusters from stacking
@@ -234,6 +269,7 @@ class PositionManager:
             coin_b=sig.coin_b,
             new_notional=sig.notional,
             open_positions=self.state.positions,
+            beta=sig.beta,
         )
         if not guard.allowed:
             self.log_fn(f"[CORR-GUARD] {guard.reason}")
@@ -263,6 +299,10 @@ class PositionManager:
 
         size_a = leg_a_usd / (price_a + 1e-12)
         size_b = leg_b_usd / (price_b + 1e-12)
+
+        for coin in (sig.coin_a, sig.coin_b):
+            if not self.executor.ensure_leverage(coin):
+                return {"opened": False, "reason": f"leverage not set for {coin}"}
 
         # --- Place leg A ---
         res_a = self._execute_leg(sig.coin_a, sign_a, size_a, leg_a_usd,
@@ -343,6 +383,10 @@ class PositionManager:
         pos_dict["beta_sd_entry"] = sig.beta_sd
         pos_dict["size_a"] = res_a.delta
         pos_dict["size_b"] = res_b.delta
+        pos_dict["entry_size_a"] = res_a.delta
+        pos_dict["entry_size_b"] = res_b.delta
+        pos_dict["exp_return_at_entry"] = sig.exp_return
+        pos_dict["stress_loss_frac"] = sig.stress_loss_frac
 
         # --- Both legs filled: record position ---
         self.state.positions.append(pos_dict)
@@ -356,6 +400,7 @@ class PositionManager:
         price_a_now: float,
         price_b_now: float,
         fresh_beta: Optional[float] = None,
+        fresh_beta_sd: Optional[float] = None,
     ) -> dict:
         """Re-evaluate an open position in the entry's coordinate frame."""
         pos = self.find_open(pair)
@@ -466,7 +511,9 @@ class PositionManager:
         # (>2 posterior sds from entry) AND economically large (>20% drift).
         if fresh_beta is not None:
             beta_entry = pos["beta_entry"]
-            beta_sd = pos.get("beta_sd_entry", 0.0)
+            # Positions opened before the autocorrelation correction stored an
+            # overconfident sd; the current posterior's sd is a floor.
+            beta_sd = max(pos.get("beta_sd_entry", 0.0), fresh_beta_sd or 0.0)
             rel_drift = abs(fresh_beta - beta_entry) / (abs(beta_entry) + 1e-9)
             posterior_drift = abs(fresh_beta - beta_entry) / (beta_sd + 1e-9)
             if rel_drift > 0.20 and posterior_drift > 2.0:

@@ -23,6 +23,12 @@ class FakeHL:
         self.user_state_error = False
         self.user_fills_error = False
 
+        self.max_leverage: dict[str, int] = {}
+        self.only_isolated: set[str] = set()
+        self.leverage_calls: list[tuple] = []
+        self.leverage_error = False
+        self.equity = {"": 1000.0, "xyz": 500.0}
+
     # ---------------- helpers ----------------
     def _oid(self) -> int:
         oid = self._next_oid
@@ -78,6 +84,29 @@ class FakeHL:
     def cancel(self, coin, oid):
         return {"status": "ok"}
 
+    def update_leverage(self, leverage, name, is_cross=True):
+        self.leverage_calls.append((name, leverage, is_cross))
+        if self.leverage_error:
+            return {"status": "err", "response": "rejected"}
+        return {"status": "ok"}
+
+    def meta(self, dex=""):
+        universe = []
+        for coin in self.prices:
+            coin_dex = coin.split(":", 1)[0] if ":" in coin else ""
+            if coin_dex != dex:
+                continue
+            universe.append({
+                "name": coin,
+                "szDecimals": self.asset_to_sz_decimals[self.coin_to_asset[coin]],
+                "maxLeverage": self.max_leverage.get(coin, 10),
+                "onlyIsolated": coin in self.only_isolated,
+            })
+        return {"universe": universe}
+
+    def spot_user_state(self, address):
+        return {"balances": []}
+
     # ---------------- Info ----------------
     def user_state(self, address, dex=""):
         if self.user_state_error:
@@ -91,7 +120,8 @@ class FakeHL:
                 "coin": coin, "szi": str(szi),
                 "positionValue": str(abs(szi) * self.prices[coin]),
             }})
-        return {"assetPositions": out, "marginSummary": {"accountValue": "1000"}}
+        return {"assetPositions": out,
+                "marginSummary": {"accountValue": str(self.equity.get(dex, 0.0))}}
 
     def user_fills(self, address):
         if self.user_fills_error:

@@ -66,6 +66,6 @@ executor:
 
 #safeguards
 safeguards:
-  max_notational_per_order: 25.0
+  max_notional_per_order: 25.0
   max_total_exposure_usd: 50.0
   max_daily_orders: 10

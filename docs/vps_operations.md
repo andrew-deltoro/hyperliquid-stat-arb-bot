@@ -8,7 +8,7 @@
 
 **SSH:**
 ```bash
-ssh hlbot@31.220.109.216
+ssh <user>@<vps-host>   # keep the real host out of the repo
 ```
 
 **Browser terminal (fallback):**
@@ -59,7 +59,15 @@ systemctl status hlbot.service
 
 **Run a cycle manually (as hlbot):**
 ```bash
-sudo -u hlbot bash -c "cd /home/hlbot/hyperliquid-stat-arb-bot && source .venv/bin/activate && python scripts/run_cycle.py"
+sudo -u hlbot bash -c "cd /home/hlbot/hyperliquid-stat-arb-bot && source .venv/bin/activate && HLBOT_RUNTIME_DIR=/home/hlbot/hlbot-runtime/live python scripts/run_cycle.py --config config/phase3-live.yaml"
+```
+
+Live mode refuses to run without `HLBOT_RUNTIME_DIR`, and a lock file in the
+runtime directory stops a manual run from overlapping a timer run.
+
+**Shadow (dry-run) cycle with live settings:**
+```bash
+HLBOT_RUNTIME_DIR=/home/hlbot/hlbot-runtime/shadow python scripts/run_cycle.py --config config/phase3-live-shadow.yaml
 ```
 
 **View live logs:**

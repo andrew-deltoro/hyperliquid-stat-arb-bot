@@ -34,6 +34,7 @@ TRADES_COLUMNS = [
     "pnl_usd", "pnl_pct",
     "exit_reason",
     "p_revert_at_entry",
+    "exp_return_at_entry",
 ]
 
 
@@ -47,6 +48,7 @@ SIGNALS_COLUMNS = [
     "p_revert", "edge", "notional",
     "direction", "action",
     "skip_reason",
+    "exp_return", "stress_loss_frac", "eg_tstat",
 ]
 
 
@@ -56,6 +58,20 @@ def _ensure_file(path: Path, columns: list[str]) -> None:
         with open(path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(columns)
+        return
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        header = reader.fieldnames or []
+        if header == columns:
+            return
+        rows = list(reader)
+    # Column set changed: rewrite with the new header, keeping old rows.
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    tmp.replace(path)
 
 
 def _append_row(path: Path, columns: list[str], row: dict) -> None:
@@ -75,18 +91,7 @@ def log_signal(sig) -> None:
     """Append one signal to signals.csv (including SKIP decisions)."""
     skip_reason = ""
     if sig.action == "SKIP":
-        if not sig.converged_coint:
-            skip_reason = "coint_not_converged"
-        elif not sig.converged_ou:
-            skip_reason = "ou_not_converged"
-        elif abs(sig.z) < 1.5:
-            skip_reason = "z_too_small"
-        elif sig.edge < 0.05:
-            skip_reason = "edge_too_small"
-        elif sig.notional <= 0:
-            skip_reason = "notional_zero"
-        else:
-            skip_reason = "unknown"
+        skip_reason = getattr(sig, "skip_reason", "") or "unknown"
 
     row = {
         "timestamp_iso": datetime.now(timezone.utc).isoformat(),
@@ -109,6 +114,9 @@ def log_signal(sig) -> None:
         "direction": sig.direction,
         "action": sig.action,
         "skip_reason": skip_reason,
+        "exp_return": f"{getattr(sig, 'exp_return', 0.0):.6f}",
+        "stress_loss_frac": f"{getattr(sig, 'stress_loss_frac', 0.0):.6f}",
+        "eg_tstat": f"{getattr(sig, 'eg_tstat', 0.0):.3f}",
     }
     _append_row(SIGNALS_FILE, SIGNALS_COLUMNS, row)
 
@@ -130,14 +138,20 @@ def compute_pnl(
       - fee_pct applied to notional on entry AND exit
       - slippage_bps applied to notional on entry AND exit
     """
-    sign_a = 1.0 if pos["direction"] == "LONG_A_SHORT_B" else -1.0
-    sign_b = -sign_a
-
-    leg_a = pos["leg_a_usd"]
-    leg_b = pos["leg_b_usd"]
-
-    pnl_a = leg_a * sign_a * (exit_price_a / pos["entry_price_a"] - 1.0)
-    pnl_b = leg_b * sign_b * (exit_price_b / pos["entry_price_b"] - 1.0)
+    if "entry_size_a" in pos and "entry_size_b" in pos:
+        # Signed filled quantities: exact for what the exchange holds.
+        qa, qb = float(pos["entry_size_a"]), float(pos["entry_size_b"])
+        pnl_a = qa * (exit_price_a - pos["entry_price_a"])
+        pnl_b = qb * (exit_price_b - pos["entry_price_b"])
+        leg_a = abs(qa) * pos["entry_price_a"]
+        leg_b = abs(qb) * pos["entry_price_b"]
+    else:
+        sign_a = 1.0 if pos["direction"] == "LONG_A_SHORT_B" else -1.0
+        sign_b = -sign_a
+        leg_a = abs(pos["leg_a_usd"])
+        leg_b = abs(pos["leg_b_usd"])
+        pnl_a = leg_a * sign_a * (exit_price_a / pos["entry_price_a"] - 1.0)
+        pnl_b = leg_b * sign_b * (exit_price_b / pos["entry_price_b"] - 1.0)
     gross_pnl = pnl_a + pnl_b
 
     # Round-trip cost model:
@@ -150,6 +164,24 @@ def compute_pnl(
     net_pnl = gross_pnl - fee_cost - slippage_cost
     pnl_pct = net_pnl / (pos["notional_usd"] + 1e-9)
     return net_pnl, pnl_pct
+
+
+def calibration_pairs() -> tuple[list[float], list[float]]:
+    """(predicted exp_return, realized pnl_pct) for closed trades that have both."""
+    if not TRADES_FILE.exists():
+        return [], []
+    pred, real = [], []
+    with open(TRADES_FILE, newline="") as f:
+        for row in csv.DictReader(f):
+            try:
+                p = float(row.get("exp_return_at_entry") or "nan")
+                r = float(row.get("pnl_pct") or "nan")
+            except ValueError:
+                continue
+            if p == p and r == r:
+                pred.append(p)
+                real.append(r)
+    return pred, real
 
 
 def log_trade(pos: dict, exit_price_a: float, exit_price_b: float) -> None:
@@ -183,5 +215,8 @@ def log_trade(pos: dict, exit_price_a: float, exit_price_b: float) -> None:
         "pnl_pct": f"{pnl_pct:.6f}",
         "exit_reason": pos.get("exit_reason", ""),
         "p_revert_at_entry": f"{pos.get('p_revert_at_entry', 0.0):.4f}",
+        "exp_return_at_entry": (
+            f"{pos['exp_return_at_entry']:.6f}" if "exp_return_at_entry" in pos else ""
+        ),
     }
     _append_row(TRADES_FILE, TRADES_COLUMNS, row)

@@ -20,8 +20,51 @@ class CointegrationFit:
     spread: np.ndarray
     spread_samples: np.ndarray
     idata: az.InferenceData
-    waic: float
+    deviance: float              # -2 * lppd (in-sample; no WAIC penalty)
     converged: bool
+    beta_sd_iid: float = 0.0     # posterior sd under the i.i.d. likelihood
+    residual_rho: float = 0.0    # lag-1 autocorrelation of the residuals
+
+
+def residual_autocorr(x: np.ndarray) -> float:
+    x = np.asarray(x, dtype=float) - np.mean(x)
+    denom = float((x * x).sum())
+    if denom <= 0 or len(x) < 3:
+        return 0.0
+    return float((x[1:] * x[:-1]).sum() / denom)
+
+
+def autocorr_inflation(rho: float) -> float:
+    """sd multiplier sqrt(n / n_eff) for AR(1) residuals with coefficient rho."""
+    rho = float(np.clip(rho, 0.0, 0.999))
+    return float(np.sqrt((1 + rho) / (1 - rho)))
+
+
+# MacKinnon (2010) critical values for the Engle-Granger test, 2 variables,
+# constant, no trend.
+EG_CRITICAL = {0.01: -3.90, 0.05: -3.34, 0.10: -3.04}
+
+
+def engle_granger_tstat(spread: np.ndarray, lags: int = 1) -> float:
+    """
+    ADF t-statistic on cointegration residuals:
+        dS_t = a + b S_{t-1} + sum_j c_j dS_{t-j} + e_t
+    More negative is stronger evidence of stationarity; compare with
+    EG_CRITICAL (standard DF tables are too lenient for estimated residuals).
+    """
+    s = np.asarray(spread, dtype=float)
+    ds = np.diff(s)
+    y = ds[lags:]
+    cols = [np.ones_like(y), s[lags:-1]]
+    for j in range(1, lags + 1):
+        cols.append(ds[lags - j:-j])
+    X = np.column_stack(cols)
+    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+    resid = y - X @ coef
+    dof = max(1, len(y) - X.shape[1])
+    s2 = float(resid @ resid) / dof
+    cov = s2 * np.linalg.inv(X.T @ X)
+    return float(coef[1] / np.sqrt(cov[1, 1]))
 
 
 def fit_cointegration(
@@ -59,7 +102,7 @@ def fit_cointegration(
         log_lik = idata.log_likelihood["obs"].values       # (chains, draws, obs)
         mean_ll_per_obs = log_lik.mean(axis=(0, 1))         # per-observation mean log-lik
         lppd = float(mean_ll_per_obs.sum())                 # log pointwise predictive density
-        waic_val = -2 * lppd                                # deviance scale, smaller is better
+        deviance = -2 * lppd                                # smaller is better; not penalized
 
     rhat = az.rhat(idata)
     max_rhat = float(max(
@@ -79,26 +122,34 @@ def fit_cointegration(
     spread_samples = log_a[None, :] - (alpha_s[:, None] + beta_s[:, None] * log_b[None, :])
     spread_mean = spread_samples.mean(axis=0)
 
+    # The likelihood treats residuals as i.i.d., but they are strongly
+    # autocorrelated, so the posterior sd of beta is too small by roughly
+    # sqrt(n / n_eff). Report the corrected value as beta_sd.
+    rho = residual_autocorr(spread_mean)
+    beta_sd_iid = float(beta_s.std())
+
     return CointegrationFit(
         alpha_mean=float(alpha_s.mean()),
         alpha_sd=float(alpha_s.std()),
         beta_mean=float(beta_s.mean()),
-        beta_sd=float(beta_s.std()),
+        beta_sd=beta_sd_iid * autocorr_inflation(rho),
         sigma_mean=float(sigma_s.mean()),
         sigma_sd=float(sigma_s.std()),
         nu_mean=float(nu_s.mean()),
         spread=spread_mean,
         spread_samples=spread_samples,
         idata=idata,
-        waic=waic_val,
+        deviance=deviance,
         converged=converged,
+        beta_sd_iid=beta_sd_iid,
+        residual_rho=rho,
     )
 
 
 def fit_null_model(
     log_a: np.ndarray,
-    draws: int = 1000, tune: int = 1000, chains: int = 4, seed: int = 0,
-    progressbar: bool = True,
+    draws: int = 1000, tune: int = 1000, chains: int = 4, cores: int = 1,
+    seed: int = 0, progressbar: bool = True,
 ) -> float:
     with pm.Model() as model:
         alpha = pm.Normal("alpha", mu=0.0, sigma=5.0)

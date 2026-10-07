@@ -39,10 +39,12 @@ def run_cycle(config_path=None, log_path=None):
         executor = DirectionalExecutor(cfg, log_fn=lambda m: _log(m, fh))
         pm = DirPositionManager(cfg, executor, log_fn=lambda m: _log(m, fh))
 
-        # Fetch account equity
+        # Fetch main-dex equity (this strategy trades the main dex only)
         try:
             state = executor.info.user_state(executor.wallet)
-            equity = float(state.get("marginSummary", {}).get("accountValue", 0))
+            margin = state.get("marginSummary", {})
+            equity = float(margin.get("accountValue", 0))
+            margin_used = float(margin.get("totalMarginUsed", 0))
             if equity < 1:
                 # fallback spot
                 spot = executor.info.spot_user_state(executor.wallet)
@@ -54,13 +56,15 @@ def run_cycle(config_path=None, log_path=None):
             _log(f"[DIR] equity fetch failed: {e}", fh)
             return log_path
 
-        # Reserve only what the pairs bot actually needs for maintenance margin.
-        # Pairs bot caps at ~$6,000 notional (3x baseline) with 2.5% maintenance
-        # on HL, so ~$150 + buffer is the real requirement.
-        pairs_maint = cfg.raw.get("directional", {}).get(
-            "pairs_maintenance_reserve_usd", 300.0)
-        dir_budget = cfg.raw.get("directional", {}).get(
-            "directional_budget_usd", 500.0)
+        # Leave the margin other positions on this account are using, times
+        # a buffer, plus a fixed floor, untouched.
+        dcfg = cfg.raw.get("directional", {})
+        reserve = max(
+            float(dcfg.get("pairs_maintenance_reserve_usd", 300.0)),
+            margin_used * float(dcfg.get("margin_used_buffer", 2.0)),
+        )
+        pairs_maint = reserve
+        dir_budget = dcfg.get("directional_budget_usd", 500.0)
         dir_equity = max(0.0, min(dir_budget, equity - pairs_maint))
         if dir_equity < cfg.directional.get("min_equity", 100):
             _log(f"[DIR] insufficient headroom (equity={equity:.2f}, "

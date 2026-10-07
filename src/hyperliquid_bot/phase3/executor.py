@@ -70,6 +70,24 @@ class BaseExecutor:
     def lot_size(self, coin: str) -> float:
         return 0.0
 
+    def account_equity(self) -> dict[str, float] | None:
+        """Equity per dex ("" = main), or None if unknown."""
+        bal = float(self.cfg.position.get("dry_run_balance",
+                                          self.cfg.position.get("baseline_balance", 0.0)))
+        split = (self.cfg.raw.get("leverage", {}) or {}).get("dry_run_dex_split", {"": 1.0})
+        return {dex: bal * float(frac) for dex, frac in split.items()}
+
+    def account_gross(self) -> float | None:
+        """Gross position value across all dexes, or None if unknown."""
+        return 0.0
+
+    def maintenance_frac(self, coin: str) -> float:
+        lev = self.cfg.raw.get("leverage", {}) or {}
+        return 0.5 / float(lev.get("default_max_leverage", 3.0))
+
+    def ensure_leverage(self, coin: str) -> bool:
+        return True
+
 
 class DryRunExecutor(BaseExecutor):
     def __init__(self, cfg, log_fn=print):
@@ -237,6 +255,86 @@ class LiveExecutor(BaseExecutor):
                     out[pos["coin"]] = szi
         return out
 
+    def account_equity(self) -> dict[str, float] | None:
+        out: dict[str, float] = {}
+        for dex in self.PERP_DEXS:
+            try:
+                state = self._user_state(dex)
+            except Exception as e:
+                self.log_fn(f"[LIVE-EXECUTOR] equity query failed (dex={dex!r}): {e}")
+                return None
+            out[dex] = float(state.get("marginSummary", {}).get("accountValue", 0))
+        if out.get("", 0.0) < 1:
+            # Unified account mode reports perp accountValue 0 and holds
+            # collateral as spot USDC.
+            try:
+                spot = self.info.spot_user_state(self.wallet_address)
+            except Exception as e:
+                self.log_fn(f"[LIVE-EXECUTOR] spot equity query failed: {e}")
+                return None
+            for b in spot.get("balances", []):
+                if b.get("coin") == "USDC":
+                    out[""] = float(b.get("total", 0))
+        return out
+
+    def account_gross(self) -> float | None:
+        return self._current_total_notional()
+
+    def _asset_meta(self, coin: str) -> dict:
+        if not hasattr(self, "_meta_cache"):
+            self._meta_cache: dict[str, dict] = {}
+        if coin not in self._meta_cache:
+            dex = _dex_of(coin)
+            meta = self.info.meta(dex=dex) if dex else self.info.meta()
+            for a in meta.get("universe", []):
+                name = a.get("name", "")
+                key = name if (not dex or name.startswith(f"{dex}:")) else f"{dex}:{name}"
+                self._meta_cache[key] = a
+        return self._meta_cache.get(coin, {})
+
+    def maintenance_frac(self, coin: str) -> float:
+        # Assumes maintenance margin = half the initial margin at max
+        # leverage; verify against Hyperliquid's margin tables per asset.
+        try:
+            max_lev = float(self._asset_meta(coin).get("maxLeverage", 0))
+        except Exception:
+            max_lev = 0.0
+        if max_lev <= 0:
+            return super().maintenance_frac(coin)
+        return 0.5 / max_lev
+
+    def ensure_leverage(self, coin: str) -> bool:
+        """
+        Set the exchange leverage and margin mode for `coin` before an entry.
+        Returns False (block the entry) if it can't be set.
+        """
+        if not hasattr(self, "_leverage_ok"):
+            self._leverage_ok: set[str] = set()
+        if coin in self._leverage_ok:
+            return True
+        lev_cfg = self.cfg.raw.get("leverage", {}) or {}
+        try:
+            meta = self._asset_meta(coin)
+        except Exception as e:
+            self.log_fn(f"[LEVERAGE] {coin}: metadata unavailable: {e}")
+            return False
+        isolated = bool(meta.get("onlyIsolated", False))
+        want = int(lev_cfg.get("isolated_leverage" if isolated else "exchange_leverage",
+                               2 if isolated else 3))
+        max_lev = int(meta.get("maxLeverage", want) or want)
+        want = max(1, min(want, max_lev))
+        try:
+            result = self.exchange.update_leverage(want, coin, is_cross=not isolated)
+        except Exception as e:
+            self.log_fn(f"[LEVERAGE] {coin}: update_leverage failed: {e}")
+            return False
+        if not isinstance(result, dict) or result.get("status") != "ok":
+            self.log_fn(f"[LEVERAGE] {coin}: update_leverage rejected: {result!r}")
+            return False
+        self.log_fn(f"[LEVERAGE] {coin}: {want}x {'isolated' if isolated else 'cross'} (max {max_lev}x)")
+        self._leverage_ok.add(coin)
+        return True
+
     def _current_total_notional(self) -> float | None:
         """Gross position value across all traded dexes, or None if unknown."""
         total = 0.0
@@ -322,7 +420,8 @@ class LiveExecutor(BaseExecutor):
                     return maker
                 maker_sz, maker_px, oid = maker.size, maker.price, maker.order_id
                 if maker.status == "filled":
-                    self.safeguards.increment_daily_order_count()
+                    if not order.reduce_only:
+                        self.safeguards.increment_daily_order_count()
                     return maker
 
         remaining = self._round_down(rounded_size - maker_sz, decimals)
@@ -347,7 +446,8 @@ class LiveExecutor(BaseExecutor):
             error=err if status != "filled" else "",
         )
 
-        if total > 0:
+        # The daily limit throttles new risk; closes don't consume it.
+        if total > 0 and not order.reduce_only:
             self.safeguards.increment_daily_order_count()
         label = {"filled": "TAKER", "partial": "PARTIAL"}.get(status, "FAIL")
         self.log_fn(

@@ -6,7 +6,7 @@ Signal (validated in v4 backtest, mean OOS Sharpe 0.85 on BTC+SOL+AVAX):
   SHORT when close < MA(200) AND 5d return < -1% AND volume > 1.5x avg(14d)
 
 Position sizing: dollar risk per trade = 2% of equity, using 2xATR stop.
-Leverage applied to notional independently of stop distance.
+suggested_notional is at 1x; DirPositionManager.try_open applies leverage.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -81,8 +81,14 @@ def _atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
 
 def generate_signal(coin: str, equity: float,
                      leverage: float = 1.0) -> Signal | None:
+    import time as _time
     candles = fetch_daily_candles(coin, days=250)
-    if not candles or len(candles) < TREND_MA_DAYS + 10:
+    if not candles:
+        return None
+    # Drop today's in-progress bar: its volume is a partial day.
+    now_ms = int(_time.time() * 1000)
+    candles = [c for c in candles if int(c["t"]) + 86_400_000 <= now_ms]
+    if len(candles) < TREND_MA_DAYS + 10:
         return None
 
     closes = np.array([float(c["c"]) for c in candles])
@@ -125,7 +131,8 @@ def generate_signal(coin: str, equity: float,
     # ATR-based sizing: dollar risk at stop = RISK_PCT * equity
     stop_frac = STOP_ATR_MULT * a / close if close > 0 else 1.0
     base_notional = (RISK_PCT * equity) / stop_frac if stop_frac > 0 else 0.0
-    suggested_notional = base_notional * leverage
+    # At 1x: the position manager applies `leverage` exactly once.
+    suggested_notional = base_notional
 
     import time
     return Signal(

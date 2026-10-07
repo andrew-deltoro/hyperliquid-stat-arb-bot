@@ -106,7 +106,7 @@ def scan_pair(coin_a: str, coin_b: str) -> dict | None:
         print(f"  null fit failed: {e}")
         return None
 
-    delta_waic = fit.waic - null_waic       # negative = coint wins
+    delta_waic = fit.deviance - null_waic       # negative = coint wins
     score = delta_waic / n                   # normalized by sample size
 
     # Current signal
@@ -125,7 +125,7 @@ def scan_pair(coin_a: str, coin_b: str) -> dict | None:
         "sigma": fit.sigma_mean,
         "nu": fit.nu_mean,
         "converged": fit.converged,
-        "coint_waic": fit.waic,
+        "coint_waic": fit.deviance,
         "null_waic": null_waic,
         "delta_waic": delta_waic,
         "score": score,

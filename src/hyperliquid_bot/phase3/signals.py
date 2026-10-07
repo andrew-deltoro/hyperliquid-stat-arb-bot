@@ -1,26 +1,25 @@
 """Generate a trade signal for one pair."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
 
-from ..data.ohlcv import aligned_close_prices
-from ..data.ohlcv import fetch_candles
-from ..stats.cointegration import fit_cointegration
-from ..stats.mean_reversion import (
-    fit_ou,
-    simulate_reversion_probability,
-    position_size,
+from ..data.ohlcv import aligned_close_prices, interval_hours
+from ..stats.cointegration import (
+    EG_CRITICAL,
+    engle_granger_tstat,
+    fit_cointegration,
 )
+from ..stats.mean_reversion import fit_ou, position_size
+from .leverage import exit_policy_from_cfg, simulate_trade_returns
 
 def _ensemble_z(log_a, log_b, lookbacks_hours):
     """Fit cointegration at multiple lookbacks, average z-scores equally.
     Equal weights (not AIC) because AIC is not comparable across sample sizes.
     Returns (z_ensemble, alpha_avg, beta_avg, spread_series) or None.
     """
-    from ..stats.cointegration import fit_cointegration
     fits = []
     for lb in lookbacks_hours:
         if lb >= len(log_a):
@@ -83,29 +82,95 @@ class Signal:
     nu_ou: float
     converged_ou: bool
     # Trade decision
-    p_revert: float
-    edge: float
+    p_revert: float              # P(net trade return > 0) under the exit policy
+    edge: float                  # p_revert - 0.5
     notional: float
     direction: str               # "LONG_A_SHORT_B" / "SHORT_A_LONG_B"
     action: str                  # "OPEN" / "SKIP"
+    exp_return: float = 0.0      # E[net trade return] per unit notional
+    stress_loss_frac: float = 0.0
+    eg_tstat: float = 0.0
+    skip_reason: str = ""
+    trade_returns: Optional[np.ndarray] = field(default=None, repr=False)
 
 def _should_use_kalman(pair: str, cfg) -> bool:
     """Kalman smoothing helps fast-reverting crypto pairs (walk-forward:
     1.5-1.6x total PnL at 30 bps fees) but hurts slow semis/metals pairs
     (0.25x). Gate by half_life_overrides presence -- those are exactly
     the pairs we've flagged as slow-reverting."""
+    sig_obj = cfg.signal
+    enabled = sig_obj.get("kalman_enabled", False)
+    overrides = sig_obj.get("half_life_overrides", {}) or {}
+    return bool(enabled) and pair not in overrides
+
+
+def _apply_kalman(pair, coint, log_a, log_b, cfg) -> None:
+    """
+    Replace the NUTS (alpha, beta) with the terminal Kalman estimate if it
+    passes the drift guards. log_b is centered so alpha and beta don't trade
+    off against each other through the level of log_b.
+    """
+    import math
+    from ..pairs.kalman import KalmanBeta
+
+    beta_nuts = coint.beta_mean
+    alpha_nuts = coint.alpha_mean
+    m = float(np.mean(log_b))
+    log_b_c = log_b - m
+    resid_sd = float(np.std(coint.spread))
     try:
-        sig_obj = cfg.signal
-        enabled = sig_obj.get("kalman_enabled", False)
-        overrides = sig_obj.get("half_life_overrides", {}) or {}
-        in_overrides = pair in overrides
-        result = bool(enabled) and not in_overrides
-        print(f"[KALMAN-CHECK] {pair}: signal_type={type(sig_obj).__name__} "
-              f"enabled={enabled} in_overrides={in_overrides} -> {result}")
-        return result
+        kf = KalmanBeta(
+            beta_init=beta_nuts,
+            alpha_init=alpha_nuts + beta_nuts * m,
+            q=float(cfg.signal.get("kalman_q", 1e-5)),
+            r=float(cfg.signal.get("kalman_r", 1e-4)),
+        )
+        for i in range(len(log_a)):
+            kf.update(float(log_a[i]), float(log_b_c[i]))
+        beta_k = float(kf.x[0])
+        alpha_c_k = float(kf.x[1])
     except Exception as e:
-        print(f"[KALMAN-CHECK] {pair}: EXCEPTION {type(e).__name__}: {e}")
-        return False
+        print(f"[KALMAN] {pair}: failed ({e}), keeping NUTS")
+        return
+
+    alpha_k = alpha_c_k - beta_k * m
+    rel_drift = abs(beta_k - beta_nuts) / (abs(beta_nuts) + 1e-9)
+    abs_drift = abs(beta_k - beta_nuts)
+    # Level shift of the spread at the centre of log_b, in residual sds.
+    level_shift = abs(alpha_c_k - (alpha_nuts + beta_nuts * m)) / (resid_sd + 1e-9)
+    max_shift = float(cfg.signal.get("kalman_alpha_max_sd", 3.0))
+    if not (math.isfinite(beta_k) and math.isfinite(alpha_k)):
+        print(f"[KALMAN] {pair}: non-finite result, keeping NUTS")
+        return
+    if rel_drift > 0.50 or abs_drift > 0.40:
+        print(f"[KALMAN] {pair}: beta drift rel={rel_drift:.1%} abs={abs_drift:.3f} "
+              f"({beta_nuts:.4f} -> {beta_k:.4f}), keeping NUTS")
+        return
+    if level_shift > max_shift:
+        print(f"[KALMAN] {pair}: alpha shift {level_shift:.2f} sd > {max_shift}, keeping NUTS")
+        return
+
+    coint.beta_mean = beta_k
+    coint.alpha_mean = alpha_k
+    coint.spread = log_a - alpha_k - beta_k * log_b
+    print(f"[KALMAN] {pair}: beta {beta_nuts:.4f} -> {beta_k:.4f}  "
+          f"alpha {alpha_nuts:.4f} -> {alpha_k:.4f}")
+    try:
+        import json as _json
+        from datetime import datetime as _dt, timezone as _tz
+        from .paths import STATE_DIR as _SD
+        _rec = {
+            "ts": _dt.now(_tz.utc).isoformat(),
+            "pair": pair,
+            "beta_nuts": beta_nuts,
+            "beta_kalman": beta_k,
+            "alpha_nuts": alpha_nuts,
+            "alpha_kalman": alpha_k,
+        }
+        with open(_SD / "kalman_beta_log.jsonl", "a") as _fh:
+            _fh.write(_json.dumps(_rec) + "\n")
+    except Exception as _log_exc:
+        print(f"[KALMAN-LOG] {pair}: failed to append: {_log_exc}")
 
 
 def generate_signal(
@@ -116,16 +181,20 @@ def generate_signal(
     kappa_prior_pop_sd: Optional[float] = None,
     scaler=None,
     btc_vol: Optional[float] = None,
+    prices: Optional[tuple] = None,
 ) -> Signal:
     """Fetch data, fit coint + OU, produce a Signal."""
     pair = f"{coin_a}/{coin_b}"
+    bar_hours = interval_hours(cfg.data["interval"])
 
-
-    ts, close_a, close_b = aligned_close_prices(
-        coin_a, coin_b,
-        interval=cfg.data["interval"],
-        lookback_hours=cfg.data["lookback_hours"],
-    )
+    if prices is None:
+        _, close_a, close_b = aligned_close_prices(
+            coin_a, coin_b,
+            interval=cfg.data["interval"],
+            lookback_hours=cfg.data["lookback_hours"],
+        )
+    else:
+        close_a, close_b = prices
     log_a = np.log(np.array(close_a))
     log_b = np.log(np.array(close_b))
 
@@ -137,70 +206,22 @@ def generate_signal(
         cores=cfg.model.get("cores", 1),
         progressbar=False,
     )
+    nuts_spread = coint.spread - coint.spread.mean()
 
-    # Optional Kalman smoothing of beta (fast-reverting crypto pairs only).
-    # Seeds from NUTS posterior mean, runs through the window to track
-    # recent drift. Replaces coint.beta_mean / alpha_mean / spread for all
-    # downstream logic (z-score, OU fit, position sizing).
     if _should_use_kalman(pair, cfg):
-        import math
-        from ..pairs.kalman import KalmanBeta
-        beta_nuts = coint.beta_mean
-        alpha_nuts = coint.alpha_mean
-        try:
-            kf = KalmanBeta(
-                beta_init=beta_nuts,
-                alpha_init=alpha_nuts,
-                q=float(cfg.signal.get("kalman_q", 1e-5)),
-                r=float(cfg.signal.get("kalman_r", 1e-4)),
-            )
-            for i in range(len(log_a)):
-                kf.update(float(log_a[i]), float(log_b[i]))
-            beta_k = float(kf.x[0])
-            alpha_k = float(kf.x[1])
-
-            # Safety guard: reject pathological Kalman outputs, keep NUTS
-            rel_drift = abs(beta_k - beta_nuts) / (abs(beta_nuts) + 1e-9)
-            abs_drift = abs(beta_k - beta_nuts)
-            if not (math.isfinite(beta_k) and math.isfinite(alpha_k)):
-                print(f"[KALMAN] {pair}: non-finite result, keeping NUTS")
-            elif rel_drift > 0.50 or abs_drift > 0.40:
-                print(f"[KALMAN] {pair}: drift rel={rel_drift:.1%} "
-                      f"abs={abs_drift:.3f} "
-                      f"({beta_nuts:.4f} -> {beta_k:.4f}), keeping NUTS")
-            else:
-                spread_k = log_a - alpha_k - beta_k * log_b
-                coint.beta_mean = beta_k
-                coint.alpha_mean = alpha_k
-                coint.spread = spread_k
-                print(f"[KALMAN] {pair}: beta {beta_nuts:.4f} -> {beta_k:.4f}  "
-                      f"alpha {alpha_nuts:.4f} -> {alpha_k:.4f}")
-                # Persistent log for later comparison
-                try:
-                    import json as _json
-                    from datetime import datetime as _dt, timezone as _tz
-                    from .paths import STATE_DIR as _SD
-                    _log = _SD / "kalman_beta_log.jsonl"
-                    _rec = {
-                        "ts": _dt.now(_tz.utc).isoformat(),
-                        "pair": pair,
-                        "beta_nuts": beta_nuts,
-                        "beta_kalman": beta_k,
-                        "alpha_nuts": alpha_nuts,
-                        "alpha_kalman": alpha_k,
-                    }
-                    with open(_log, "a") as _fh:
-                        _fh.write(_json.dumps(_rec) + "\n")
-                except Exception as _log_exc:
-                    print(f"[KALMAN-LOG] {pair}: failed to append: {_log_exc}")
-        except Exception as e:
-            print(f"[KALMAN] {pair}: failed ({e}), keeping NUTS")
+        _apply_kalman(pair, coint, log_a, log_b, cfg)
 
     # Centered spread
     spread_centered = coint.spread - coint.spread.mean()
     current_spread = float(spread_centered[-1])
-    spread_sd = float(spread_centered.std())
+    # The Kalman terminal frame is fitted to the end of the same window it is
+    # scored on; never let that shrink the scale below the static fit's.
+    spread_sd = float(max(spread_centered.std(), nuts_spread.std()))
     z = current_spread / (spread_sd + 1e-9)
+
+    eg_t = engle_granger_tstat(spread_centered)
+    eg_level = cfg.signal.get("stationarity_level", 0.10)
+    eg_ok = eg_level is None or eg_t <= EG_CRITICAL[float(eg_level)]
 
     ou = fit_ou(
         spread_centered,
@@ -212,77 +233,74 @@ def generate_signal(
         kappa_prior_pop=kappa_prior_pop,
         kappa_prior_pop_sd=kappa_prior_pop_sd,
     )
+    half_life_hours = ou.half_life_bars * bar_hours
 
     kappa_s = ou.idata.posterior["kappa"].stack(s=("chain", "draw")).values
     sigma_s = ou.idata.posterior["sigma"].stack(s=("chain", "draw")).values
     nu_s = ou.idata.posterior["nu"].stack(s=("chain", "draw")).values
 
-    # Trade horizon = 2x half-life
-    horizon = max(6, int(ou.half_life_bars * cfg.position["exit_horizon_mult"]))
-
-    p_revert = simulate_reversion_probability(
-        current_spread=current_spread,
-        kappa_post=kappa_s,
-        sigma_post=sigma_s,
-        nu_post=nu_s,
-        horizon=horizon,
-        target_frac=cfg.position["target_frac"],
-        paths_per_sample=10,
+    policy = exit_policy_from_cfg(
+        cfg, half_life_bars=min(ou.half_life_bars, 500.0),
+        beta=coint.beta_mean, bar_hours=bar_hours,
     )
-
-    # Half-life filter: reject slow-reverting pairs (validated: HL>96h net-negative)
-    # Flag-based instead of None-return to avoid downstream None propagation.
-    # Per-pair overrides: HIP-3 pairs (semis, metals) revert slower than
-    # crypto pairs. The 96h global filter was validated on crypto only.
-    # Walk-forward on HIP-3 pairs had no HL filter — wins occurred at
-    # natural HL (98-120h). Overrides let us trade them without loosening
-    # the crypto filter.
-    overrides = cfg.signal.get("half_life_overrides", {}) or {}
-    pair_key = pair  # defined above as f"{coin_a}/{coin_b}"
-    hl_max = float(overrides.get(pair_key, cfg.signal.get("half_life_max_hours", 999999)))
-    half_life_rejected = ou.half_life_bars > hl_max
-
+    stress_q = float((cfg.raw.get("leverage", {}) or {}).get("stress_quantile", 0.01))
+    dist = simulate_trade_returns(
+        current_spread=current_spread,
+        kappa_post=kappa_s, sigma_post=sigma_s, nu_post=nu_s,
+        policy=policy, stress_quantile=stress_q,
+        seed=int(cfg.model.get("seed", 0)),
+    )
+    p_revert = dist.p_win
     edge = p_revert - 0.5
 
-    notional = position_size(
-        p_revert=p_revert,
-        sigma=ou.sigma_mean,
-        nu=ou.nu_mean,
-        base_notional=cfg.position["base_notional"],
-    )
+    # Half-life filter: reject slow-reverting pairs (validated: HL>96h net-negative)
+    # Per-pair overrides: HIP-3 pairs (semis, metals) revert slower than
+    # crypto pairs. The 96h global filter was validated on crypto only.
+    overrides = cfg.signal.get("half_life_overrides", {}) or {}
+    hl_max = float(overrides.get(pair, cfg.signal.get("half_life_max_hours", 999999)))
+    half_life_rejected = half_life_hours > hl_max
 
-
-    # Apply compounding scale
-    if scaler is not None:
-        notional = scaler.scale_notional(notional)
-
-    # Minimum order floor: Hyperliquid rejects orders below $10.
-    # If the edge-weighted size is below that, skip rather than submit a
-    # rejected order.
-    MIN_ORDER_USD = 10.0
-    if 0 < notional < MIN_ORDER_USD:
+    kelly_mode = (cfg.raw.get("leverage", {}) or {}).get("mode") == "kelly"
+    if kelly_mode:
+        # Sized later by the scheduler from the trade distribution and book.
         notional = 0.0
+    else:
+        notional = position_size(
+            p_revert=p_revert,
+            sigma=ou.sigma_mean,
+            nu=ou.nu_mean,
+            base_notional=cfg.position["base_notional"],
+        )
+        if scaler is not None:
+            notional = scaler.scale_notional(notional)
+        # Hyperliquid rejects orders below $10.
+        if 0 < notional < 10.0:
+            notional = 0.0
 
-    # Entry decision
     # Asymmetric z thresholds: tight side (z < 0) showed stronger edge
     # (walk-forward n=445: tight CI lower +0.045 vs wide -0.009).
-    # Wide side stricter, tight side looser.
     z_thresh_wide = float(cfg.signal.get("z_entry_min_wide", cfg.signal.get("z_entry_min", 1.0)))
     z_thresh_tight = float(cfg.signal.get("z_entry_min_tight", cfg.signal.get("z_entry_min", 1.0)))
     threshold = z_thresh_wide if z > 0 else z_thresh_tight
-    enough_z = abs(z) >= threshold
-    enough_edge = edge >= cfg.signal["edge_min"]
-    models_ok = coint.converged and ou.converged
+    min_ret = float(cfg.signal.get("min_expected_return", 0.0))
 
-    # Regime filter: skip entries during high-vol regimes
-    regime_ok = True
-    if btc_vol is not None:
-        max_vol = cfg.signal.get("max_btc_vol", 1.0)
-        if btc_vol > max_vol:
-            regime_ok = False
+    max_vol = cfg.signal.get("max_btc_vol", 1.0)
+    checks = [
+        (coint.converged, "coint_not_converged"),
+        (ou.converged, "ou_not_converged"),
+        (coint.beta_mean > 0, "beta_nonpositive"),
+        (btc_vol is not None, "btc_vol_unknown"),
+        (btc_vol is None or btc_vol <= max_vol, "btc_vol_high"),
+        (eg_ok, "not_stationary"),
+        (not half_life_rejected, "half_life_too_long"),
+        (abs(z) >= threshold, "z_too_small"),
+        (dist.exp_return > min_ret, "expected_return_too_small"),
+        (kelly_mode or edge >= cfg.signal["edge_min"], "edge_too_small"),
+        (kelly_mode or notional > 0, "notional_zero"),
+    ]
+    failed = [reason for ok, reason in checks if not ok]
 
-
-    if enough_z and enough_edge and models_ok and regime_ok and notional > 0 and not half_life_rejected:
+    if not failed:
         action = "OPEN"
         direction = ("SHORT_A_LONG_B" if current_spread > 0
                      else "LONG_A_SHORT_B")
@@ -301,9 +319,14 @@ def generate_signal(
         current_spread=current_spread,
         spread_sd=spread_sd,
         z=z,
-        kappa=ou.kappa_mean, half_life_hours=ou.half_life_bars,
+        kappa=ou.kappa_mean, half_life_hours=half_life_hours,
         sigma_ou=ou.sigma_mean, nu_ou=ou.nu_mean,
         converged_ou=ou.converged,
         p_revert=p_revert, edge=edge, notional=notional,
         direction=direction, action=action,
+        exp_return=dist.exp_return,
+        stress_loss_frac=dist.stress_loss_frac,
+        eg_tstat=eg_t,
+        skip_reason=",".join(failed),
+        trade_returns=dist.returns,
     )
