@@ -125,8 +125,13 @@ def pooled_calibrations(
     rows = _trade_rows(path)
     pred, real, pair_ids = [], [], []
     for row in rows:
+        # Pre-E[r] journal rows have a blank prediction; skip them so c
+        # stays on the prior instead of inventing a p_revert proxy.
+        raw_p = (row.get("exp_return_at_entry") or "").strip()
+        if not raw_p:
+            continue
         try:
-            p = float(row.get("exp_return_at_entry") or "nan")
+            p = float(raw_p)
             r = float(row.get("pnl_pct") or "nan")
         except ValueError:
             continue
@@ -165,12 +170,19 @@ def load_portfolio_stats(cfg_lev: dict) -> PortfolioStats:
         prior_sd=float(cfg_lev.get("calibration_prior_sd", 0.25)),
         pair_prior_strength=float(cfg_lev.get("pair_calibration_strength", 4.0)),
     )
+    n_missing = sum(
+        1 for r in _trade_rows()
+        if not (r.get("exp_return_at_entry") or "").strip()
+    )
+    detail = (f"ρ={rho:.2f} (raw {rho_raw:.2f}, n_pairs={n_obs}) "
+              f"c={c_g:.2f} (n_trades={n_tr}, pairs={len(c_by)})")
+    if n_missing:
+        detail += f" missing_exp_return={n_missing}"
     return PortfolioStats(
         rho=rho, rho_raw=rho_raw, n_pair_obs=n_obs,
         calibration_global=c_g, calibration_by_pair=c_by,
         n_trades_global=n_tr,
-        detail=(f"ρ={rho:.2f} (raw {rho_raw:.2f}, n_pairs={n_obs}) "
-                f"c={c_g:.2f} (n_trades={n_tr}, pairs={len(c_by)})"),
+        detail=detail,
     )
 
 

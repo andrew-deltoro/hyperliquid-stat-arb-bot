@@ -24,7 +24,7 @@ placed while making these changes.
 | M5 | Cluster caps on gross leg notional per leg, with xyz semis/metals and the missing crypto coins; per-coin cap | `test_risk_controls.py` |
 | M6 | `flock` on the runtime dir; live mode requires `HLBOT_RUNTIME_DIR`; docs updated | `test_stats_and_data.py` |
 | M7 | Funding executor defaults to dry run, parses statuses, hedges the filled quantity and unwinds on error, uses `szDecimals`, transfers need `allow_transfers` | `test_directional_funding.py` |
-| M8 | Directional closes are reduce-only for its own quantity (no `market_close` on the net position); budget reserves live margin used | `test_directional_funding.py` |
+| M8 | Directional closes are reduce-only for its own quantity (no `market_close` on the net position); budget reserves live margin used. **Full isolation:** pairs / directional executors take optional `subaccount_address_env` → `Exchange.vault_address`; see `scripts/manage_subaccounts.py` and `docs/audit/OPTIONAL_POLISH.md` | `test_directional_funding.py`, `test_account_targets.py` |
 | M9 | β ≤ 0 skipped at signal time and rejected in `try_open` | `test_risk_controls.py` |
 | L2 | `max_notational_per_order` typo fixed in four configs | — |
 | L3, L4 | `fit_null_model` takes `cores`; "WAIC" renamed `deviance` | — |
@@ -76,5 +76,14 @@ raise caps only after the calibration factor is estimated from recorded trades.
 ## Still open
 
 - ~~H6~~ / ~~§3.3 ρ+pooling~~ / ~~funding in PnL~~: on `main` @ joint-ecm stack.
-- M8 in full: separate subaccounts per strategy.
+- ~~M8 subaccounts (code)~~: executors take `subaccount_address_env` →
+  `Exchange.vault_address`; `scripts/manage_subaccounts.py` lists/creates/funds.
+  **Exchange gate (2026-10-07):** `createSubAccount` requires **$100k** lifetime
+  traded volume; this master has ~$14k, so named `pairs` / `directional`
+  subaccounts cannot be created yet. Until then soft isolation remains
+  (directional reduce-only for its own qty + budget reserve). When the gate
+  clears: create → fund with explicit `--usd --execute` → set
+  `HL_PAIRS_SUBACCOUNT` / `HL_DIR_SUBACCOUNT` → restart.
 - ~~Live orphans COMP / GMT / SNX~~: flattened 2026-10-07 with reduce-only IOC.
+- Optional polish (funding-rate panel, xyz gaps, trigger-order shapes):
+  `docs/audit/OPTIONAL_POLISH.md`.

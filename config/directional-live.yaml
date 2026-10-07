@@ -15,4 +15,6 @@ executor:
   network: mainnet
   private_key_env: HL_PRIVATE_KEY_MAINNET
   account_address_env: HL_ACCOUNT_ADDRESS_MAINNET
+  # M8: set after creating/funding the directional subaccount.
+  subaccount_address_env: HL_DIR_SUBACCOUNT
   slippage_tolerance: 0.015

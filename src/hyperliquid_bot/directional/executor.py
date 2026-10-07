@@ -11,6 +11,8 @@ from __future__ import annotations
 import math
 import os
 
+from ..account import resolve_account_targets
+
 
 class DirectionalExecutor:
     def __init__(self, cfg, log_fn=print, exchange=None, info=None, wallet=None):
@@ -23,6 +25,9 @@ class DirectionalExecutor:
 
         if exchange is not None and info is not None:
             self.exchange, self.info, self.wallet = exchange, info, wallet or ""
+            self.wallet_address = self.wallet
+            self.master_address = wallet or ""
+            self.vault_address = None
             return
 
         from eth_account import Account
@@ -33,18 +38,29 @@ class DirectionalExecutor:
         self.base_url = (constants.MAINNET_API_URL if network == "mainnet"
                          else constants.TESTNET_API_URL)
         pk = os.getenv(ex_cfg.get("private_key_env", "HL_PRIVATE_KEY_MAINNET"))
-        wallet = os.getenv(ex_cfg.get("account_address_env",
-                                       "HL_ACCOUNT_ADDRESS_MAINNET"))
-        if not pk or not wallet:
+        if not pk:
             raise RuntimeError("Missing HL credentials")
-        self.wallet = wallet
+        targets = resolve_account_targets(ex_cfg)
+        self.wallet = targets.trading_address
+        self.wallet_address = targets.trading_address
+        self.master_address = targets.master_address
+        self.vault_address = targets.vault_address
         account = Account.from_key(pk)
-        self.exchange = Exchange(account, self.base_url,
-                                 account_address=wallet, perp_dexs=[""])
+        self.exchange = Exchange(
+            account, self.base_url,
+            account_address=targets.master_address,
+            vault_address=targets.vault_address,
+            perp_dexs=[""],
+        )
         self.info = Info(self.base_url, skip_ws=True, perp_dexs=[""])
 
-        self.log_fn(f"[DIR-EXECUTOR] network={network} "
-                    f"account={wallet[:10]}...")
+        acct_note = (
+            f"subaccount={self.wallet[:10]}... "
+            f"(master={self.master_address[:10]}...)"
+            if self.vault_address else
+            f"account={self.wallet[:10]}..."
+        )
+        self.log_fn(f"[DIR-EXECUTOR] network={network} {acct_note}")
 
     def _round_sz(self, coin: str, sz: float) -> float:
         asset = self.info.coin_to_asset.get(coin)

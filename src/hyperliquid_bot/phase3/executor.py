@@ -3,6 +3,7 @@ Executor: places orders (dry-run or live testnet/mainnet).
 
 LiveExecutor uses hyperliquid-python-sdk with an API wallet pattern.
 The API wallet's private key signs; the main wallet is the account_address.
+Optional strategy subaccounts are passed as Exchange.vault_address (HL M8).
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from ..account import resolve_account_targets
 from .testnet_safeguards import Safeguards
 
 
@@ -131,6 +133,8 @@ class LiveExecutor(BaseExecutor):
             self.exchange = exchange
             self.info = info
             self.wallet_address = wallet_address or ""
+            self.master_address = self.wallet_address
+            self.vault_address = None
             self.api_wallet_address = ""
         else:
             self._init_sdk(ex_cfg)
@@ -142,10 +146,17 @@ class LiveExecutor(BaseExecutor):
             max_daily_orders=int(sg.get("max_daily_orders", 20)),
         )
 
+        vault = getattr(self, "vault_address", None)
+        acct_note = (
+            f"subaccount={self.wallet_address[:10]}... "
+            f"(master={getattr(self, 'master_address', self.wallet_address)[:10]}...)"
+            if vault else
+            f"account={self.wallet_address[:10]}..."
+        )
         self.log_fn(
             f"[LIVE-EXECUTOR] network={self.network} "
             f"api_wallet={self.api_wallet_address[:10]}... "
-            f"account={self.wallet_address[:10]}... "
+            f"{acct_note} "
             f"safeguards: max_order=${sg.get('max_notional_per_order', 50)}, "
             f"max_exposure=${sg.get('max_total_exposure_usd', 100)}, "
             f"max_daily={sg.get('max_daily_orders', 20)}"
@@ -181,17 +192,17 @@ class LiveExecutor(BaseExecutor):
         account = Account.from_key(private_key)
         self.api_wallet_address = account.address
 
-        # API wallet trades on behalf of the main wallet.
-        acct_env = ex_cfg.get("account_address_env", "HL_ACCOUNT_ADDRESS")
-        self.wallet_address = os.getenv(acct_env, "").strip()
-        if not self.wallet_address:
-            raise RuntimeError(
-                f"Live executor requires env var {acct_env} "
-                f"(main wallet address) in .env"
-            )
+        # API wallet signs; master owns the agent; optional subaccount holds
+        # positions (Exchange.vault_address). Info queries use trading_address.
+        targets = resolve_account_targets(ex_cfg)
+        self.master_address = targets.master_address
+        self.wallet_address = targets.trading_address
+        self.vault_address = targets.vault_address
 
         self.exchange = Exchange(
-            account, base_url, account_address=self.wallet_address,
+            account, base_url,
+            account_address=self.master_address,
+            vault_address=self.vault_address,
             perp_dexs=self.PERP_DEXS,
         )
         self.info = Info(base_url, skip_ws=True, perp_dexs=self.PERP_DEXS)

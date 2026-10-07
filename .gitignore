@@ -1,5 +1,6 @@
 # ---- Python ----
 __pycache__/
+scripts/**/__pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
@@ -22,27 +23,26 @@ logs/
 reports/*.csv
 reports/*.log
 reports/*.png
+reports/*.json
+reports/.dir_cache/
+reports/.dir_cache*/
+reports/.screener_cache/
 nohup.out
 
-# ---- Archives ----
+# ---- Archives / editor junk ----
 hlbot.tar.gz
 *.tar.gz
-
-# ---- OS / Editor ----
+*.bak
+*.tmp
+*.bak-*
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
 *.swp
+hlbot-status.sh
 
 # ---- Allow .gitkeep placeholders through ----
 !state/.gitkeep
 !logs/.gitkeep
 !reports/.gitkeep
-hlbot-status.sh
-*.bak
-*.tmp
-*.bak-*
-scripts/walk_forward.py.bak-*
-reports/.screener_cache/
-reports/*.json

@@ -172,14 +172,21 @@ def compute_pnl(
 
 
 def calibration_pairs() -> tuple[list[float], list[float]]:
-    """(predicted exp_return, realized pnl_pct) for closed trades that have both."""
+    """(predicted exp_return, realized pnl_pct) for closed trades that have both.
+
+    Rows with blank exp_return_at_entry (pre-E[r] journal) are skipped — do not
+    substitute p_revert; it is not in return units and would crush c.
+    """
     if not TRADES_FILE.exists():
         return [], []
     pred, real = [], []
     with open(TRADES_FILE, newline="") as f:
         for row in csv.DictReader(f):
+            raw_p = (row.get("exp_return_at_entry") or "").strip()
+            if not raw_p:
+                continue
             try:
-                p = float(row.get("exp_return_at_entry") or "nan")
+                p = float(raw_p)
                 r = float(row.get("pnl_pct") or "nan")
             except ValueError:
                 continue

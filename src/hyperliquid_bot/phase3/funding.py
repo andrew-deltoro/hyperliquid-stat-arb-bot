@@ -3,9 +3,34 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+# HL userFunding pages are capped (~500). Walk startTime forward when full.
+_PAGE = 500
+_MAX_PAGES = 40
+
 
 def _ms(iso: str) -> int:
     return int(datetime.fromisoformat(iso).timestamp() * 1000)
+
+
+def _iter_user_funding(info, wallet: str, start_ms: int, end_ms: int):
+    cursor = start_ms
+    for _ in range(_MAX_PAGES):
+        try:
+            hist = info.user_funding_history(wallet, cursor, end_ms)
+        except Exception:
+            return
+        if not hist:
+            return
+        for row in hist:
+            yield row
+        if len(hist) < _PAGE:
+            return
+        last_t = int(hist[-1].get("time", 0))
+        if last_t <= cursor:
+            return
+        cursor = last_t + 1
+        if cursor > end_ms:
+            return
 
 
 def funding_for_coins(info, wallet: str, coins: list[str],
@@ -20,11 +45,7 @@ def funding_for_coins(info, wallet: str, coins: list[str],
     start_ms, end_ms = _ms(start_iso), _ms(end_iso)
     want = set(coins)
     out = {c: 0.0 for c in coins}
-    try:
-        hist = info.user_funding_history(wallet, start_ms, end_ms)
-    except Exception:
-        return out
-    for row in hist or []:
+    for row in _iter_user_funding(info, wallet, start_ms, end_ms):
         delta = row.get("delta") or {}
         if delta.get("type") != "funding":
             continue

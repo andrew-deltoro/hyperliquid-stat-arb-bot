@@ -134,6 +134,9 @@ executor:
   mode: live
   private_key_env: HL_PRIVATE_KEY_MAINNET
   account_address_env: HL_ACCOUNT_ADDRESS_MAINNET
+  # M8: set after `scripts/manage_subaccounts.py create --name pairs --execute`
+  # and funding the subaccount. Until then the master account is used.
+  subaccount_address_env: HL_PAIRS_SUBACCOUNT
   network: mainnet
   slippage_tolerance: 0.01
   prefer_maker: true

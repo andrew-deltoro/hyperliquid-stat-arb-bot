@@ -136,6 +136,7 @@ executor:
   mode: dry_run
   private_key_env: HL_PRIVATE_KEY_MAINNET
   account_address_env: HL_ACCOUNT_ADDRESS_MAINNET
+  subaccount_address_env: HL_PAIRS_SUBACCOUNT
   network: mainnet
   slippage_tolerance: 0.01
   prefer_maker: true
