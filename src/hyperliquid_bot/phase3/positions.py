@@ -609,14 +609,27 @@ class PositionManager:
         pos["exit_beta"] = exit_beta
         pos["exit_time_iso"] = now_iso()
 
-        # Journal the completed trade
+        # Journal the completed trade (price PnL + account funding on both coins)
         if exit_price_a is not None and exit_price_b is not None:
-            journal.log_trade(pos, exit_price_a, exit_price_b)
+            funding_usd = 0.0
+            info = getattr(self.executor, "info", None)
+            wallet = getattr(self.executor, "wallet_address", "") or ""
+            if info is not None and wallet:
+                try:
+                    from .funding import position_funding_usd
+                    funding_usd = position_funding_usd(info, wallet, pos)
+                except Exception as e:
+                    self.log_fn(f"[FUNDING] {pos['pair']}: query failed: {e}")
+            pos["funding_usd"] = funding_usd
             pnl_usd, pnl_pct = journal.compute_pnl(
-                pos, exit_price_a, exit_price_b,
+                pos, exit_price_a, exit_price_b, funding_usd=funding_usd,
             )
             pos["pnl_usd"] = pnl_usd
             pos["pnl_pct"] = pnl_pct
+            journal.log_trade(pos, exit_price_a, exit_price_b,
+                              funding_usd=funding_usd)
+            if funding_usd:
+                self.log_fn(f"[FUNDING] {pos['pair']}: {funding_usd:+.4f} USDC")
 
         save_state(self.state)
         return {"action": "closed", "reason": reason, "position": pos}

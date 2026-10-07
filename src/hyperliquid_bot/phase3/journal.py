@@ -35,6 +35,7 @@ TRADES_COLUMNS = [
     "exit_reason",
     "p_revert_at_entry",
     "exp_return_at_entry",
+    "funding_usd",
 ]
 
 
@@ -127,9 +128,11 @@ def compute_pnl(
     exit_price_b: float,
     fee_pct: float = 0.00045,
     slippage_bps: float = 3.0,
+    funding_usd: float = 0.0,
 ) -> tuple[float, float]:
     """
-    Realized P&L in USD and pct of deployed notional, NET of fees + slippage.
+    Realized P&L in USD and pct of deployed notional, NET of fees,
+    slippage, and funding.
 
     LONG_A_SHORT_B: long A, short B
     SHORT_A_LONG_B: short A, long B
@@ -137,6 +140,8 @@ def compute_pnl(
     Cost model:
       - fee_pct applied to notional on entry AND exit
       - slippage_bps applied to notional on entry AND exit
+      - funding_usd: sum of account funding payments on both coins while open
+        (positive = received)
     """
     if "entry_size_a" in pos and "entry_size_b" in pos:
         # Signed filled quantities: exact for what the exchange holds.
@@ -161,7 +166,7 @@ def compute_pnl(
     fee_cost = notional_total * fee_pct * 2.0
     slippage_cost = notional_total * (slippage_bps / 10000.0) * 2.0
 
-    net_pnl = gross_pnl - fee_cost - slippage_cost
+    net_pnl = gross_pnl - fee_cost - slippage_cost + float(funding_usd)
     pnl_pct = net_pnl / (pos["notional_usd"] + 1e-9)
     return net_pnl, pnl_pct
 
@@ -184,13 +189,17 @@ def calibration_pairs() -> tuple[list[float], list[float]]:
     return pred, real
 
 
-def log_trade(pos: dict, exit_price_a: float, exit_price_b: float) -> None:
+def log_trade(pos: dict, exit_price_a: float, exit_price_b: float,
+              funding_usd: float = 0.0) -> None:
     """Append a completed trade (entry + exit) to trades.csv."""
     entry_dt = datetime.fromisoformat(pos["entry_time_iso"])
     exit_dt = datetime.fromisoformat(pos["exit_time_iso"])
     elapsed_hours = (exit_dt - entry_dt).total_seconds() / 3600.0
 
-    pnl_usd, pnl_pct = compute_pnl(pos, exit_price_a, exit_price_b)
+    funding_usd = float(pos.get("funding_usd", funding_usd) or 0.0)
+    pnl_usd, pnl_pct = compute_pnl(
+        pos, exit_price_a, exit_price_b, funding_usd=funding_usd,
+    )
 
     row = {
         "pair": pos["pair"],
@@ -218,5 +227,6 @@ def log_trade(pos: dict, exit_price_a: float, exit_price_b: float) -> None:
         "exp_return_at_entry": (
             f"{pos['exp_return_at_entry']:.6f}" if "exp_return_at_entry" in pos else ""
         ),
+        "funding_usd": f"{funding_usd:.6f}",
     }
     _append_row(TRADES_FILE, TRADES_COLUMNS, row)

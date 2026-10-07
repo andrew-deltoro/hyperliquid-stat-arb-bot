@@ -256,7 +256,9 @@ def size_trade(
 ) -> SizingDecision:
     """Pair notional N for a new trade. Every cap is logged as `binding`."""
     frac_kelly = float(cfg_lev.get("kelly_fraction", 0.25))
-    rho = float(cfg_lev.get("assumed_pair_correlation", 0.3))
+    # Prefer a fitted ρ from portfolio.load_portfolio_stats when provided.
+    rho = float(cfg_lev.get("pair_correlation",
+                            cfg_lev.get("assumed_pair_correlation", 0.3)))
     k_conc = int(cfg_lev.get("max_concurrent_positions", 10))
     max_trade_frac = float(cfg_lev.get("max_trade_notional_frac", 0.5))
     max_gross_lev = float(cfg_lev.get("max_gross_leverage", 2.0))

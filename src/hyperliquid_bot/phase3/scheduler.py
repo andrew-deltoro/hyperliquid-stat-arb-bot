@@ -13,7 +13,8 @@ from .signals import generate_signal
 from .positions import PositionManager
 from .executor import _dex_of, build_executor
 from . import journal
-from .leverage import TradeDistribution, calibration_factor, size_trade
+from .leverage import TradeDistribution, size_trade
+from .portfolio import calibration_for_pair, load_portfolio_stats
 from .scaler import PositionScaler
 
 
@@ -57,10 +58,12 @@ def _acquire_cycle_lock():
 
 
 def _size_for_book(sig, pm, executor, equity, account_gross, calibration,
-                   cfg) -> tuple[float, str]:
+                   cfg, rho: float | None = None) -> tuple[float, str]:
     """Kelly/stress-constrained pair notional for `sig` given the open book."""
     lev = dict(cfg.raw.get("leverage", {}) or {})
     lev.setdefault("max_concurrent_positions", cfg.risk["max_concurrent_positions"])
+    if rho is not None:
+        lev["pair_correlation"] = rho
     dex = _dex_of(sig.coin_a)
     dex_equity = float(equity.get(dex, 0.0))
     if dex_equity <= 0:
@@ -270,7 +273,7 @@ def _run_cycle(cfg, ex_cfg, log_path):
         # ---------- 3. Open new positions ----------
         _log("--- Opening new positions ---", fh)
         equity = account_gross = None
-        calibration = 1.0
+        port = None
         if not exchange_ok:
             _log("Skipping entries: exchange position state unavailable", fh)
             signals = {}
@@ -281,16 +284,11 @@ def _run_cycle(cfg, ex_cfg, log_path):
                 _log("Skipping entries: account equity/exposure unavailable", fh)
                 signals = {}
             else:
-                pred, real = journal.calibration_pairs()
-                calibration = calibration_factor(
-                    pred, real,
-                    prior_mean=float(lev_cfg.get("calibration_prior_mean", 0.5)),
-                    prior_sd=float(lev_cfg.get("calibration_prior_sd", 0.25)),
-                )
+                port = load_portfolio_stats(lev_cfg)
                 _log(f"[LEVERAGE] equity={ {k or 'main': round(v, 2) for k, v in equity.items()} } "
                      f"gross=${account_gross:.2f} "
                      f"gross_leverage={account_gross / max(sum(equity.values()), 1e-9):.2f}x "
-                     f"calibration c={calibration:.2f} (n={len(pred)} trades)", fh)
+                     f"{port.detail}", fh)
 
         ranked = sorted(signals.items(), key=lambda kv: -kv[1].exp_return)
         for pair, sig in ranked:
@@ -302,9 +300,12 @@ def _run_cycle(cfg, ex_cfg, log_path):
             price_a, price_b = prices[pair]
 
             if kelly_mode:
+                c = calibration_for_pair(port, pair) if port else 0.5
                 notional, why = _size_for_book(
-                    sig, pm, executor, equity, account_gross, calibration, cfg)
-                _log(f"[{pair}] sizing: N=${notional:.2f} {why}", fh)
+                    sig, pm, executor, equity, account_gross, c, cfg,
+                    rho=port.rho if port else None,
+                )
+                _log(f"[{pair}] sizing: N=${notional:.2f} c_pair={c:.2f} {why}", fh)
                 if notional <= 0:
                     continue
                 sig.notional = notional
