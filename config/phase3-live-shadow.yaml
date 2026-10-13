@@ -33,6 +33,12 @@ pairs:
   - DOGE
 - - ETH
   - SOL
+- - LINEA
+  - UMA
+- - RSR
+  - TAO
+- - AIXBT
+  - LAYER
 data:
   interval: 1h
   lookback_hours: 720
@@ -99,6 +105,8 @@ risk:
     defi: 1000.0
     oracle: 600.0
     meme: 800.0
+    l2: 600.0
+    ai: 600.0
     xyz_semis: 900.0
     xyz_metals: 700.0
   max_coin_gross_usd: 700.0

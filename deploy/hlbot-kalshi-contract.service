@@ -1,0 +1,19 @@
+[Unit]
+Description=Kalshi 15-minute contract clock for the OFI hypothesis
+After=network.target
+
+[Service]
+Type=simple
+User=hlbot
+WorkingDirectory=/home/hlbot/hyperliquid-stat-arb-bot
+Environment="PATH=/home/hlbot/hyperliquid-stat-arb-bot/.venv/bin"
+Environment="HLBOT_RUNTIME_DIR=/home/hlbot/hlbot-runtime/live"
+Environment="PYTHONPATH=/home/hlbot/hyperliquid-stat-arb-bot/src"
+ExecStart=/home/hlbot/hyperliquid-stat-arb-bot/.venv/bin/python scripts/kalshi_contract_cycle.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/hlbot/hlbot-runtime/live/logs/kalshi_contract.log
+StandardError=append:/home/hlbot/hlbot-runtime/live/logs/kalshi_contract.log
+
+[Install]
+WantedBy=multi-user.target

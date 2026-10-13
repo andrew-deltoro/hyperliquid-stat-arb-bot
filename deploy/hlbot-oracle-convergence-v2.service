@@ -1,0 +1,15 @@
+[Unit]
+Description=Research-only cost-gated perp/oracle convergence hypothesis v2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/hlbot/hyperliquid-stat-arb-bot
+Environment="PYTHONPATH=/home/hlbot/hyperliquid-stat-arb-bot"
+ExecStart=/home/hlbot/hyperliquid-stat-arb-bot/.venv/bin/python scripts/oracle_convergence_cycle.py --config config/oracle_convergence_cost_gated_v2.yaml --loop
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target

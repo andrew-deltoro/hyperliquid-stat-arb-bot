@@ -47,3 +47,4 @@ hlbot-status.sh
 !logs/.gitkeep
 !reports/.gitkeep
 reports/.trend_cache/
+reports/.funding_decile_cache/

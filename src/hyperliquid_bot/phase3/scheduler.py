@@ -255,6 +255,7 @@ def _run_cycle(cfg, ex_cfg, log_path):
                 pair, price_a, price_b,
                 fresh_beta=fresh.beta if fresh else None,
                 fresh_beta_sd=fresh.beta_sd if fresh else None,
+                fresh_exp_return=fresh.exp_return if fresh else None,
             )
 
             if result["action"] == "closed":
@@ -291,9 +292,28 @@ def _run_cycle(cfg, ex_cfg, log_path):
                      f"gross_leverage={account_gross / max(sum(equity.values()), 1e-9):.2f}x "
                      f"{port.detail}", fh)
 
+        excluded_assets = asset_exclusions(cfg.raw)
+        unhealthy_pairs = pair_health_blocks(cfg.raw)
+        if excluded_assets:
+            _log(
+                "[ENTRY EXCLUSIONS] assets: "
+                + ", ".join(f"{coin} ({reason})" for coin, reason in excluded_assets.items()),
+                fh,
+            )
+        if unhealthy_pairs:
+            _log(
+                "[ENTRY EXCLUSIONS] pairs: "
+                + ", ".join(f"{pair} ({reason})" for pair, reason in unhealthy_pairs.items()),
+                fh,
+            )
+
         ranked = sorted(signals.items(), key=lambda kv: -kv[1].exp_return)
         for pair, sig in ranked:
             if sig is None or sig.action != "OPEN":
+                continue
+            block_reason = entry_block_reason(pair, excluded_assets, unhealthy_pairs)
+            if block_reason:
+                _log(f"[{pair}] entry quarantined: {block_reason}", fh)
                 continue
             if pm.find_open(pair) is not None:
                 _log(f"[{pair}] already open", fh)

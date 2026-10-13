@@ -1,0 +1,56 @@
+# LOCKED 2026-10-09 before any cohort is scored.
+# Research-only. Any rule change creates a new hypothesis version.
+
+hypothesis_id: hl-perp-oracle-convergence-4h-v1
+mode: paper
+api_url: https://api.hyperliquid.xyz/info
+
+universe:
+  minimum_day_volume_usd: 5000000.0
+  require_open_interest: true
+  minimum_assets: 20
+
+signal:
+  field: impact_mid_minus_oracle
+  richest_fraction: 0.10
+  cheapest_fraction: 0.10
+  minimum_executable_edge_bps: 0.0
+  # Richest are paper-shorted; cheapest are paper-bought.
+  require_signal_side: true
+
+entry:
+  evaluate_every_hours: 1
+  grace_minutes: 10
+  notional_usd_per_position: 500.0
+
+exit:
+  hold_hours: 4
+
+execution_model:
+  order_type: market
+  require_full_visible_book_fill: true
+  perp_taker_fee_rate: 0.00045
+
+inference:
+  unit: nonoverlapping_four_hour_cohort
+  confirmatory_entry_hours_utc: [0, 4, 8, 12, 16, 20]
+  minimum_complete_cohorts: 30
+  locked_sample: first_30_complete_confirmatory_cohorts
+  support_if_probability_mean_gt_zero_at_least: 0.95
+  posterior_draws: 50000
+  seed: 20261009
+  prior:
+    family: normal_inverse_gamma
+    mean_usd: 0.0
+    kappa: 0.25
+    alpha: 2.0
+    beta: 16.0
+
+measurement:
+  collector_interval_seconds: 300
+  path_interval_minutes: 15
+
+outputs:
+  database: state/oracle_convergence_v1.db
+  report: state/oracle_convergence_v1_report.json
+  dashboard: reports/oracle_convergence_v1_dashboard.png
