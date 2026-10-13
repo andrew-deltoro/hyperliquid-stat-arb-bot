@@ -1,0 +1,77 @@
+# Locked 2026-10-08, before any contract in this tape is scored.
+#
+# Hypothesis: the sign of Hyperliquid's top-of-book imbalance during the
+# first minute of a Kalshi 15-minute "price up?" contract predicts that
+# contract's official settlement by enough to pay the ask and the taker fee.
+#
+# This file does not place orders. The microstructure recorder and
+# hl_microstructure.jsonl are a different process and are not modified.
+#
+# One change after a verdict is a new hypothesis, not an edit here.
+
+hypothesis_id: kalshi-btc-15m-ofi-first-minute
+
+# The test. ETH is recorded by the same clock and is not scored.
+test:
+  series: KXBTC15M
+  coin: BTC
+
+record_also:
+  - series: KXETH15M
+    coin: ETH
+
+# CF Benchmarks BRTI 60-second averages settle the contract, not the
+# Hyperliquid mid. The result field on the finalized market is the outcome.
+settlement_source: kalshi_result
+
+# Signal. Taken only from book updates inside [open_time, open_time + 60s).
+# The process must already have been collecting at open_time + 5s, so a
+# restart in the middle of the minute cannot keep the window.
+signal:
+  field: ofi_5
+  window_sec: 60
+  # Kalshi lists the contract at its open, not before. 15s is the slack
+  # for that listing plus one poll. A process that starts later than this
+  # still records a miss rather than a partial minute.
+  must_cover_from_sec: 15
+  min_samples: 5
+  # Mean of zero, or too few samples, is a flat. Flats are logged and not scored.
+  flat_if_zero: true
+
+# The quote is fetched at the decision instant, not from the open of the window.
+# A fetch later than the grace is a missed decision, not a late fill.
+decision:
+  offset_sec: 60
+  grace_sec: 15
+
+# Cross the book. One contract, because that is the account this score is for.
+# Quadratic taker fee from Kalshi's schedule, multiplier confirmed on the
+# series object (fee_type quadratic, fee_multiplier 1):
+#   fee = round up to the next cent of 0.07 * C * P * (1-P)
+# YES pays yes_ask. NO pays no_ask. Both come from the market object.
+execution:
+  role: taker
+  contracts: 1
+  fee_rate: 0.07
+  fee_round: up_cent
+
+# Taker-buy share over the same first minute is written on the decision
+# and is not read by the scorer.
+sealed:
+  - taker_ratio_first_minute
+
+# No verdict until this many BTC decisions have a side and a settlement.
+# 20 UTC days * 96 windows. Missed windows do not count and do not get replaced.
+minimum_scored: 1920
+
+# When the minimum is reached, the earliest 70% of those contracts by
+# close_time are the scatter. The last 30% are scored once. The kill is
+# a scatter mean at or below zero. The script writes the verdict file on
+# that first eligible run and will not recompute it.
+walk_forward:
+  scatter_frac: 0.70
+  kill_if_scatter_mean_pnl_leq: 0.0
+
+outputs:
+  tape: /home/hlbot/hlbot-runtime/live/state/kalshi_contract_tape.jsonl
+  verdict: /home/hlbot/hlbot-runtime/live/state/kalshi_hypothesis_verdict.json
