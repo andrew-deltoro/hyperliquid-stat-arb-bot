@@ -19,9 +19,11 @@ from dataclasses import dataclass
 DEFAULT_CLUSTERS: dict[str, list[str]] = {
     "btc_eth": ["BTC", "ETH"],
     "alt_l1":  ["SOL", "AVAX", "SUI", "APT", "SEI", "TIA", "INJ", "NEO", "ETC", "LTC"],
-    "defi":    ["AAVE", "COMP", "UNI", "SUSHI", "MKR", "CRV", "BAL", "SNX", "DYDX"],
+    "defi":    ["AAVE", "COMP", "UNI", "SUSHI", "MKR", "CRV", "BAL", "SNX", "DYDX", "RSR", "UMA"],
     "oracle":  ["LINK", "PYTH"],
     "meme":    ["DOGE", "SHIB", "PEPE", "WIF", "MEME", "AIXBT", "GMT", "ORDI"],
+    "l2":      ["ARB", "OP", "LINEA", "LAYER"],
+    "ai":      ["TAO", "FET", "RENDER"],
     "xyz_semis": ["XYZ:NVDA", "XYZ:PLTR", "XYZ:MU", "XYZ:TSM", "XYZ:AMD"],
     "xyz_metals": ["XYZ:GOLD", "XYZ:SILVER"],
 }
