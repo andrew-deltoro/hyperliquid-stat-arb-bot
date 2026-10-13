@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HL Research Dashboards</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0; background: #080d1a; color: #eef2ff;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+    header {
+      position: sticky; top: 0; z-index: 2; padding: 20px 5%;
+      background: rgba(8,13,26,.94); border-bottom: 1px solid #26324d;
+      backdrop-filter: blur(8px);
+    }
+    h1 { margin: 0 0 7px; font-size: 28px; }
+    .status { color: #94a3b8; font-size: 14px; }
+    nav { margin-top: 12px; }
+    nav a {
+      color: #93c5fd; margin-right: 18px; text-decoration: none;
+      font-weight: 650;
+    }
+    main { width: min(1500px, 94%); margin: 28px auto 70px; }
+    section {
+      margin: 0 0 34px; padding: 20px; background: #10182b;
+      border: 1px solid #26324d; border-radius: 14px;
+    }
+    h2 { margin: 0 0 6px; font-size: 23px; }
+    p { margin: 0 0 18px; color: #a9b4cc; }
+    img {
+      display: block; width: 100%; height: auto; border-radius: 8px;
+      background: #0b1020;
+    }
+    .two { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .caption { margin: 9px 0 0; color: #94a3b8; font-size: 13px; }
+    @media (max-width: 900px) { .two { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Hyperliquid Research Dashboards</h1>
+    <div class="status">Graphics refresh every five minutes. Page refresh: <span id="updated"></span></div>
+    <nav>
+      <a href="#live-pairs">Live Pairs P&amp;L</a>
+      <a href="#obr">Oracle Basis Reversion</a>
+      <a href="#funding">Funding Harvest</a>
+      <a href="#method">Experiment Explanation</a>
+    </nav>
+  </header>
+  <main>
+    <section id="live-pairs">
+      <h2>Live Pairs Bot — P&amp;L</h2>
+      <p>Realized pair performance, current open estimates, and account reconciliation flags.</p>
+      <img data-live src="live_pairs_pnl.png" alt="Live pairs bot PnL">
+    </section>
+    <section id="obr">
+      <h2>Oracle Basis Reversion — Live State</h2>
+      <p>Completed cohorts, formal evidence, cost-gated V2, and current robust uncertainty.</p>
+      <img data-live src="oracle_convergence_live_status.png" alt="Oracle Basis Reversion live status">
+    </section>
+    <section>
+      <h2>Confidence Diagnostics</h2>
+      <p>Robust posterior sensitivity and executable 15-minute convergence paths.</p>
+      <img data-live src="oracle_convergence_diagnostics.png" alt="Oracle Basis Reversion diagnostics">
+    </section>
+    <section id="funding">
+      <h2>Funding Harvest — Live State</h2>
+      <p>Funding observations, paper positions, completed outcomes, and evidence progress.</p>
+      <img data-live src="funding_harvest_v1_dashboard.png" alt="Funding harvest dashboard">
+    </section>
+    <section id="method">
+      <h2>What Oracle Basis Reversion Tests</h2>
+      <p>The signal, V1 control, V2 cost gate, execution model, and confidence procedure.</p>
+      <img src="oracle_convergence_explainer.png" alt="Oracle Basis Reversion explainer">
+    </section>
+  </main>
+  <script>
+    function refresh() {
+      const stamp = Date.now();
+      document.querySelectorAll("img[data-live]").forEach((img) => {
+        img.src = img.src.split("?")[0] + "?t=" + stamp;
+      });
+      document.getElementById("updated").textContent = new Date().toLocaleString();
+    }
+    refresh();
+    setInterval(refresh, 60000);
+  </script>
+</body>
+</html>
