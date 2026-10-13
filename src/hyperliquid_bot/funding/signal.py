@@ -5,8 +5,15 @@ Reads state/funding_history.db, ranks candidates by funding quality,
 flags which have Binance USDT spot pairs (hardcoded, expandable).
 
 Output: state/funding_candidates.json
+
+Path resolution follows the same rule as everything else (phase3/paths.py):
+the runtime dir wins when HLBOT_RUNTIME_DIR is set, then the historical
+locations. The collector writes to runtime state/, so the legacy repo path
+is kept only as a fallback for the 52MB of history collected before the
+move. Newest non-empty file wins if several exist.
 """
 from __future__ import annotations
+
 import json
 import os
 import sqlite3
@@ -14,23 +21,39 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Resolve DB path — the collector writes to repo/state/, not the runtime dir
-_CANDIDATE_PATHS = [
-    Path("/home/hlbot/hyperliquid-stat-arb-bot/state/funding_history.db"),
-    Path("/home/hlbot/hlbot-runtime/live/state/funding_history.db"),
-    Path("/home/hlbot/hlbot-runtime/dry/state/funding_history.db"),
-]
+_REPO_STATE = Path("/home/hlbot/hyperliquid-stat-arb-bot/state")
+
+
+def _candidate_paths() -> list[Path]:
+    """Newest-first list of every place funding_history.db has lived."""
+    paths: list[Path] = []
+    runtime = os.getenv("HLBOT_RUNTIME_DIR", "").strip()
+    if runtime:
+        paths.append(Path(runtime) / "state" / "funding_history.db")
+    paths.append(_REPO_STATE / "funding_history.db")
+    paths.append(Path("/home/hlbot/hlbot-runtime/live/state/funding_history.db"))
+    paths.append(Path("/home/hlbot/hlbot-runtime/dry/state/funding_history.db"))
+    return paths
 
 
 def _resolve_db() -> Path:
-    existing = [p for p in _CANDIDATE_PATHS if p.exists() and p.stat().st_size > 0]
+    candidates = _candidate_paths()
+    existing = [p for p in candidates if p.exists() and p.stat().st_size > 0]
     if not existing:
-        return _CANDIDATE_PATHS[0]
+        # Nothing on disk yet: return the preferred (runtime if set) path so
+        # the caller creates it in the right place.
+        return candidates[0]
     return max(existing, key=lambda p: p.stat().st_mtime)
 
 
+def _resolve_out_file() -> Path:
+    # Keep the candidates file next to the DB it was derived from, so the
+    # reader and writer never end up looking at different directories.
+    return DB_FILE.parent / "funding_candidates.json"
+
+
 DB_FILE = _resolve_db()
-OUT_FILE = Path("/home/hlbot/hyperliquid-stat-arb-bot/state/funding_candidates.json")
+OUT_FILE = _resolve_out_file()
 
 # Binance-listed spot pairs we can trade. Extend as we discover more.
 # Format: HL coin name -> Binance spot symbol

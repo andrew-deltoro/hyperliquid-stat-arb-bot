@@ -25,7 +25,14 @@ from pathlib import Path
 import numpy as np
 
 PDT = timezone(timedelta(hours=-7))
-DB = Path("/home/hlbot/hyperliquid-stat-arb-bot/state/funding_history.db")
+# Resolve like the collector does: runtime state dir wins, repo is the
+# fallback (where the history lived before 2026-10-13).
+_CANDIDATES = [
+    Path("/home/hlbot/hlbot-runtime/live/state/funding_history.db"),
+    Path("/home/hlbot/hyperliquid-stat-arb-bot/state/funding_history.db"),
+]
+DB = next((p for p in _CANDIDATES if p.exists() and p.stat().st_size > 0),
+          _CANDIDATES[0])
 EVENT = datetime(2026, 10, 12, 4, 0, tzinfo=timezone.utc)
 FWD_BARS = 4          # 4 x 15min = 1h forward
 NONOVL_BARS = 4       # 1h between samples
