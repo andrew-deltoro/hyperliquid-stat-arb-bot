@@ -94,6 +94,7 @@ def simulate_trade_returns(
     max_paths: int = 20000,
     stress_quantile: float = 0.01,
     seed: int | None = 0,
+    spread_entry: float | np.ndarray | None = None,
 ) -> TradeDistribution:
     """
     Simulate net trade returns under `policy`.
@@ -101,6 +102,13 @@ def simulate_trade_returns(
     `current_spread` may be a scalar or a per-posterior-draw array. An array
     propagates beta (and other) uncertainty into the entry level, stop, and
     target — required when the OU and cointegrating residual are fit jointly.
+
+    `spread_entry` (optional) decouples the level the exits are measured from
+    (the entry level) from the level the path starts at (the current level).
+    It is needed when re-simulating an already-open position: the stop/cross
+    targets are the entry geometry, but the path must begin where the spread
+    is now. When omitted it defaults to `current_spread`, preserving the
+    at-entry behaviour exactly.
     """
     rng = np.random.default_rng(seed)
     kappa_post = np.asarray(kappa_post, dtype=float)
@@ -111,6 +119,15 @@ def simulate_trade_returns(
     if len(s0_draws) != n_draws:
         raise ValueError("current_spread length must match posterior draws")
 
+    if spread_entry is None:
+        ref_draws = s0_draws
+    else:
+        ref_draws = np.asarray(spread_entry, dtype=float)
+        if ref_draws.ndim == 0:
+            ref_draws = np.full(n_draws, float(ref_draws))
+        if len(ref_draws) != n_draws:
+            raise ValueError("spread_entry length must match posterior draws")
+
     idx = np.tile(np.arange(n_draws), paths_per_draw)
     if len(idx) > max_paths:
         idx = rng.choice(idx, size=max_paths, replace=False)
@@ -118,23 +135,25 @@ def simulate_trade_returns(
     sig = np.asarray(sigma_post, dtype=float)[idx]
     nu = np.asarray(nu_post, dtype=float)[idx]
     s0 = s0_draws[idx]
+    ref = ref_draws[idx]
     n = len(idx)
 
     # Trade direction from the posterior-mean entry spread (same rule as
-    # signals.direction); paths keep their own s0 for exits.
-    mean_s0 = float(s0_draws.mean())
-    direction = 1.0 if mean_s0 < 0 else -1.0
+    # signals.direction); paths keep their own level for exits.
+    mean_ref = float(ref_draws.mean())
+    direction = 1.0 if mean_ref < 0 else -1.0
     s = s0.copy()
     exit_s = np.full(n, np.nan)
     held = np.full(n, policy.horizon_bars, dtype=float)
     open_ = np.ones(n, dtype=bool)
     best = s0.copy()
 
-    stop_level = policy.stop_mult * s0
-    cross_level = -policy.cross_frac * s0
-    target_level = policy.target_frac * s0
-    trail_dist = policy.trail_frac * np.abs(s0)
-    activation = policy.trail_activation_frac * np.abs(s0)
+    # PnL is measured from the *entry* reference, exits from the entry geometry.
+    stop_level = policy.stop_mult * ref
+    cross_level = -policy.cross_frac * ref
+    target_level = policy.target_frac * ref
+    trail_dist = policy.trail_frac * np.abs(ref)
+    activation = policy.trail_activation_frac * np.abs(ref)
 
     for t in range(1, policy.horizon_bars + 1):
         s = (1.0 - k) * s + rng.standard_t(nu) * sig
@@ -147,7 +166,7 @@ def simulate_trade_returns(
         if policy.exit_mode == "cross":
             take = direction * (s - cross_level) >= 0
         elif policy.exit_mode == "trail":
-            activated = direction * (s - s0) >= activation
+            activated = direction * (s - ref) >= activation
             take = activated & (direction * (best - s) > trail_dist)
         else:
             take = direction * (s - target_level) >= 0
@@ -159,7 +178,7 @@ def simulate_trade_returns(
         if not open_.any():
             break
 
-    r = (0.5 * direction * (exit_s - s0)
+    r = (0.5 * direction * (exit_s - ref)
          - policy.cost_frac
          - policy.carry_frac_per_bar * held)
     q = float(np.quantile(r, stress_quantile))

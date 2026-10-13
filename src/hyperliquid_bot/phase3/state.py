@@ -69,5 +69,14 @@ def save_state(state: State) -> None:
     _atomic_write_json(POSITIONS_FILE, {"positions": state.positions})
 
 
+def upsert_position(state: State, pos: dict) -> None:
+    """Replace `state`'s entry for `pos` by pair (or append if new)."""
+    for i, existing in enumerate(state.positions):
+        if existing.get("pair") == pos.get("pair"):
+            state.positions[i] = pos
+            return
+    state.positions.append(pos)
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()

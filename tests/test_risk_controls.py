@@ -94,11 +94,13 @@ def test_negative_beta_is_rejected(tmp_path):
     assert hl.orders == []
 
 
-def test_beta_shift_uses_current_posterior_sd_as_floor(tmp_path):
+def test_beta_drift_with_no_economic_damage_holds(tmp_path):
+    # Finding 3.2: a large posterior beta drift alone is no longer an exit.
+    # Here |Δβ|/sd(β) = 5σ, but the spread still has a positive expected
+    # return under the real exit policy, so the position is held.
     hl = FakeHL({"AAA": 10.0, "BBB": 20.0})
     hl.positions = {"AAA": 10.0, "BBB": -5.0}
     pm, _ = make_pm(hl, tmp_path)
-    # Legacy position: beta 1.0 recorded with an overconfident sd of 0.01.
     open_position(pm, size_a=10.0, size_b=-5.0, beta_sd_entry=0.01,
                   entry_alpha=0.0, entry_mean_raw=0.0)
     import math
@@ -106,10 +108,50 @@ def test_beta_shift_uses_current_posterior_sd_as_floor(tmp_path):
     pm.state.positions[0]["entry_mean_raw"] = math.log(pa) - math.log(pb)
     pm.state.positions[0]["entry_spread"] = -0.02
 
-    held = pm.evaluate_open("AAA/BBB", pa, pb, fresh_beta=1.25, fresh_beta_sd=0.2)
+    held = pm.evaluate_open("AAA/BBB", pa, pb, fresh_beta=1.25,
+                            fresh_beta_sd=0.05, fresh_exp_return=+0.02)
     assert held["action"] == "hold"
-    shifted = pm.evaluate_open("AAA/BBB", pa, pb, fresh_beta=1.25, fresh_beta_sd=0.05)
+
+    # Same 5σ drift, but the spread no longer pays -> exit.
+    shifted = pm.evaluate_open("AAA/BBB", pa, pb, fresh_beta=1.25,
+                               fresh_beta_sd=0.05, fresh_exp_return=-0.01)
     assert shifted["action"] == "closed" and shifted["reason"] == "beta_shift"
+
+
+def test_beta_drift_disabled_without_stored_sd(tmp_path):
+    # Finding 3.1: with no posterior sd there is no statistical scale, so the
+    # drift gate must not fire even when the expected return is negative.
+    hl = FakeHL({"AAA": 10.0, "BBB": 20.0})
+    hl.positions = {"AAA": 10.0, "BBB": -5.0}
+    pm, _ = make_pm(hl, tmp_path)
+    open_position(pm, size_a=10.0, size_b=-5.0, beta_sd_entry=0.0,
+                  entry_alpha=0.0, entry_mean_raw=0.0)
+    import math
+    pa, pb = 10.0, 20.0
+    pm.state.positions[0]["entry_mean_raw"] = math.log(pa) - math.log(pb)
+    pm.state.positions[0]["entry_spread"] = -0.02
+
+    res = pm.evaluate_open("AAA/BBB", pa, pb, fresh_beta=1.60,
+                           fresh_beta_sd=0.0, fresh_exp_return=-0.01)
+    assert res["action"] == "hold"
+
+
+def test_beta_sd_backfilled_on_first_sight(tmp_path):
+    # Finding 3.1: a pre-correction position (no stored sd) is made safe by
+    # persisting the fresh posterior sd on first sight.
+    hl = FakeHL({"AAA": 10.0, "BBB": 20.0})
+    hl.positions = {"AAA": 10.0, "BBB": -5.0}
+    pm, _ = make_pm(hl, tmp_path)
+    open_position(pm, size_a=10.0, size_b=-5.0, beta_sd_entry=0.0,
+                  entry_alpha=0.0, entry_mean_raw=0.0)
+    import math
+    pa, pb = 10.0, 20.0
+    pm.state.positions[0]["entry_mean_raw"] = math.log(pa) - math.log(pb)
+    pm.state.positions[0]["entry_spread"] = -0.02
+
+    pm.evaluate_open("AAA/BBB", pa, pb, fresh_beta=1.05,
+                     fresh_beta_sd=0.03, fresh_exp_return=+0.01)
+    assert pm.state.positions[0]["beta_sd_entry"] == pytest.approx(0.03)
 
 
 def test_pnl_uses_filled_quantities():

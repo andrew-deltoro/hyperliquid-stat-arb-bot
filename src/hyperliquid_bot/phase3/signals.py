@@ -93,6 +93,11 @@ class Signal:
     eg_tstat: float = 0.0
     skip_reason: str = ""
     trade_returns: Optional[np.ndarray] = field(default=None, repr=False)
+    # Posterior draws carried out of the joint fit so a position's exit gate
+    # can re-simulate the spread later without a fresh fit (see leverage.py).
+    spread_for_sim: Optional[np.ndarray] = field(default=None, repr=False)
+    kappa_draws: Optional[np.ndarray] = field(default=None, repr=False)
+    sigma_draws: Optional[np.ndarray] = field(default=None, repr=False)
 
 def _should_use_kalman(pair: str, cfg) -> bool:
     """Kalman smoothing helps fast-reverting crypto pairs (walk-forward:
@@ -385,4 +390,7 @@ def generate_signal(
         eg_tstat=eg_t,
         skip_reason=",".join(failed),
         trade_returns=dist.returns,
+        spread_for_sim=np.asarray(spread_for_sim, dtype=float),
+        kappa_draws=np.asarray(kappa_s, dtype=float),
+        sigma_draws=np.asarray(sigma_s, dtype=float),
     )

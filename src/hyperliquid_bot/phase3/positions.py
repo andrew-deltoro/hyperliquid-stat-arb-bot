@@ -3,12 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from .state import Position, State, load_state, save_state, now_iso
+from .state import Position, State, load_state, save_state, now_iso, upsert_position
 from .signals import Signal
 from .executor import BaseExecutor, Fill, Order, _dex_of, build_executor
 from . import journal
 from .correlation_guard import CorrelationGuard
-from .leverage import BookExposure
+from .leverage import (
+    BookExposure,
+    exit_policy_from_cfg,
+    simulate_trade_returns,
+)
 
 
 # A leg counts as filled when at least this fraction of the requested size
@@ -16,6 +20,42 @@ from .leverage import BookExposure
 FULL_FILL_FRAC = 0.95
 # Live exposure below this many USD doesn't block re-entry on a coin.
 DUST_THRESHOLD_USD = 5.0
+# Cap on stored posterior draws per position, to keep positions.json small.
+MAX_POSTERIOR_DRAWS = 256
+
+
+def _subsample(values) -> list:
+    """Evenly subsample posterior draws to MAX_POSTERIOR_DRAWS, rounded."""
+    if values is None:
+        return []
+    try:
+        import numpy as np
+
+        arr = np.asarray(values, dtype=float).ravel()
+    except Exception:  # noqa: BLE001
+        return []
+    if arr.size == 0:
+        return []
+    if arr.size > MAX_POSTERIOR_DRAWS:
+        step = arr.size / MAX_POSTERIOR_DRAWS
+        idx = (np.arange(MAX_POSTERIOR_DRAWS) * step).astype(int)
+        arr = arr[idx]
+    return [round(float(v), 8) for v in arr]
+
+
+def _bar_hours_from_cfg(cfg) -> float:
+    """Duration of one bar in hours from the data interval string."""
+    interval = str((cfg.data or {}).get("interval", "1h"))
+    try:
+        if interval.endswith("h"):
+            return float(interval[:-1])
+        if interval.endswith("m"):
+            return float(interval[:-1]) / 60.0
+        if interval.endswith("d"):
+            return float(interval[:-1]) * 24.0
+    except ValueError:
+        pass
+    return 1.0
 
 
 def _parse_iso(s: str) -> datetime:
@@ -387,11 +427,111 @@ class PositionManager:
         pos_dict["entry_size_b"] = res_b.delta
         pos_dict["exp_return_at_entry"] = sig.exp_return
         pos_dict["stress_loss_frac"] = sig.stress_loss_frac
+        # Finding 3.4: carry the entry posterior so the beta-drift gate can
+        # evaluate the spread's posterior predictive PnL later, without a
+        # fresh fit. Subsample to bound the state file size.
+        pos_dict["entry_spread_draws"] = _subsample(sig.spread_for_sim)
+        pos_dict["entry_kappa_draws"] = _subsample(sig.kappa_draws)
+        pos_dict["entry_sigma_draws"] = _subsample(sig.sigma_draws)
+        pos_dict["entry_nu_mean"] = float(sig.nu_ou)
 
         # --- Both legs filled: record position ---
         self.state.positions.append(pos_dict)
         save_state(self.state)
         return {"opened": True, "position": pos_dict}
+
+    # ---------------- monitoring helpers ----------------
+    def _spread_pnl_should_exit(
+        self,
+        pos: dict,
+        current_centered: float,
+        fresh_exp_return: Optional[float] = None,
+        require_signal: bool = False,
+    ) -> tuple[bool, dict]:
+        """
+        Economics gate for beta-drift exits.
+
+        Finding 3.4 (sanity floor): if the position carries its stored entry
+        posterior (spread draws, kappa, sigma, nu), simulate the REAL exit
+        policy from the *current* level and exit only when the posterior
+        predictive mean net return is <= 0. If the posterior is unavailable,
+        fall back to the live signal's posterior predictive mean
+        (`fresh_exp_return`, produced by `simulate_trade_returns` in signals).
+
+        When `require_signal` is true and neither posterior is available, do
+        not exit (used for the beta-drift path). A hard floor exits whenever
+        the current level is already beyond the level the stop would have
+        closed at, so a position with no posterior can always be made safe.
+        """
+        detail: dict = {"source": "none"}
+
+        # 0. Preferred: the live signal's posterior predictive mean, computed
+        #    by signals.simulate_trade_returns with the real exit policy.
+        if fresh_exp_return is not None:
+            detail = {"source": "signal_posterior", "exp_return": round(float(fresh_exp_return), 5)}
+            if float(fresh_exp_return) <= 0.0:
+                return True, detail
+            # Positive expected return: the spread still pays. Do not exit on
+            # a pure beta drift (Finding 3.2).
+            return False, detail
+
+        # 1. Position-local entry posterior: simulate the exit policy from the
+        #    current level but with the ENTRY geometry as the reference. Used
+        #    when the signal is unavailable.
+        s0_draws = pos.get("entry_spread_draws")
+        kappa = pos.get("entry_kappa_draws")
+        sigma = pos.get("entry_sigma_draws")
+        nu_mean = pos.get("entry_nu_mean")
+        if s0_draws and kappa and sigma and nu_mean is not None:
+            try:
+                import numpy as np
+
+                n = min(len(s0_draws), len(kappa), len(sigma))
+                s0 = np.asarray(s0_draws[:n], dtype=float)
+                # Shift the entry draws' dispersion onto the current level and
+                # re-center, then hold the entry level fixed as the reference.
+                s_now = s0 - s0.mean() + current_centered
+                entry_ref = np.full(n, float(pos["entry_spread"]))
+                policy = exit_policy_from_cfg(
+                    self.cfg,
+                    half_life_bars=min(
+                        pos["half_life_hours"] / _bar_hours_from_cfg(self.cfg), 500.0
+                    ),
+                    beta=pos["beta_entry"],
+                    bar_hours=_bar_hours_from_cfg(self.cfg),
+                )
+                dist = simulate_trade_returns(
+                    current_spread=s_now,
+                    kappa_post=np.asarray(kappa[:n], dtype=float),
+                    sigma_post=np.asarray(sigma[:n], dtype=float),
+                    nu_post=np.full(n, float(nu_mean)),
+                    policy=policy,
+                    seed=int((self.cfg.model or {}).get("seed", 0)),
+                    spread_entry=entry_ref,
+                )
+                exp_ret = float(dist.exp_return)
+                detail = {
+                    "source": "position_posterior",
+                    "exp_return": round(exp_ret, 5),
+                    "p_win": round(float(dist.p_win), 3),
+                    "draws": len(dist.returns),
+                }
+                return exp_ret <= 0.0, detail
+            except Exception as exc:  # noqa: BLE001
+                self.log_fn(f"[BETA-EXIT] {pos['pair']}: posterior sim failed: {exc}")
+                detail = {"source": "position_posterior_failed", "error": str(exc)}
+
+        # 2. Hard level floor: current spread already past the stop level.
+        stop_spread = float(pos.get("stop_spread", 0.0))
+        long_a = pos["direction"] == "LONG_A_SHORT_B"
+        breached = (
+            current_centered <= stop_spread if long_a else current_centered >= stop_spread
+        )
+        detail = {"source": "level_floor", "breached_stop": bool(breached)}
+        if breached:
+            return True, detail
+
+        return False, detail
 
     # ---------------- monitor & close ----------------
     def evaluate_open(
@@ -401,6 +541,7 @@ class PositionManager:
         price_b_now: float,
         fresh_beta: Optional[float] = None,
         fresh_beta_sd: Optional[float] = None,
+        fresh_exp_return: Optional[float] = None,
     ) -> dict:
         """Re-evaluate an open position in the entry's coordinate frame."""
         pos = self.find_open(pair)
@@ -416,6 +557,21 @@ class PositionManager:
             - pos["beta_entry"] * math.log(price_b_now)
         )
         current_centered = raw_now - pos["entry_mean_raw"]
+
+        # Finding 3.1: positions opened before the autocorrelation correction
+        # stored no beta sd, so the beta-drift gate had no scale to test
+        # against. Backfill from the fresh posterior sd on first sight and
+        # persist it immediately, so a restart cannot resurrect the blind
+        # relative rule. The beta-drift exit is disabled until this exists.
+        if not pos.get("beta_sd_entry") and fresh_beta_sd:
+            pos["beta_sd_entry"] = float(fresh_beta_sd)
+            pos["beta_sd_backfilled_iso"] = now_iso()
+            upsert_position(self.state, pos)
+            save_state(self.state)
+            self.log_fn(
+                f"[BETA-EXIT] {pos['pair']}: backfilled beta_sd_entry="
+                f"{float(fresh_beta_sd):.5f} from current posterior"
+            )
 
         # Helper closure: always passes fresh prices to _close
         def close(reason: str):
@@ -506,18 +662,36 @@ class PositionManager:
         if datetime.now(timezone.utc) >= _parse_iso(pos["time_stop_iso"]):
             return close("time_stop")
 
-        # --- 4. BETA DRIFT STOP (posterior-aware) ---
-        # Only exit if the fresh beta is BOTH statistically improbable
-        # (>2 posterior sds from entry) AND economically large (>20% drift).
+        # --- 4. BETA DRIFT STOP (posterior, spread-level PnL gate) ---
+        # Finding 3.2: the old gate used the *relative* point-estimate drift
+        # (|Δβ|/|β| > 20%) as a hard exit. Relative drift is not
+        # uncertainty-aware, so a 12% move on a spuriously precise beta
+        # force-closed trades mid-reversion (see cross_only_counterfactual).
+        # Now beta drift is only a *trigger*: it must be statistically large
+        # next to the beta posterior AND the current spread must have a
+        # non-positive expected net PnL under the real exit policy. Beta is a
+        # hedge ratio, not a forecast, so a drift that hasn't yet damaged the
+        # economics of the position is not a reason to exit.
+        #
+        # Finding 3.1: if a position has no stored beta sd (pre-correction
+        # entry), the relative rule is disabled entirely (no sd -> no gate).
         if fresh_beta is not None:
             beta_entry = pos["beta_entry"]
-            # Positions opened before the autocorrelation correction stored an
-            # overconfident sd; the current posterior's sd is a floor.
             beta_sd = max(pos.get("beta_sd_entry", 0.0), fresh_beta_sd or 0.0)
-            rel_drift = abs(fresh_beta - beta_entry) / (abs(beta_entry) + 1e-9)
-            posterior_drift = abs(fresh_beta - beta_entry) / (beta_sd + 1e-9)
-            if rel_drift > 0.20 and posterior_drift > 2.0:
-                return close("beta_shift")
+            min_z = float(self.cfg.position.get("beta_shift_min_posterior_sd", 2.0))
+            # Trigger requires a genuine posterior sigma to scale against.
+            posterior_drift = (
+                abs(fresh_beta - beta_entry) / beta_sd if beta_sd > 0 else 0.0
+            )
+            if beta_sd > 0 and posterior_drift >= min_z:
+                # Route through the shared economics gate. Required (not held)
+                # so unbackfilled positions are made safe on their next beta
+                # drift instead of being force-closed.
+                should_exit, _detail = self._spread_pnl_should_exit(
+                    pos, current_centered, fresh_exp_return, require_signal=False
+                )
+                if should_exit:
+                    return close("beta_shift")
 
         # Still open
         z_now = current_centered / (pos["entry_sigma_raw"] + 1e-9)

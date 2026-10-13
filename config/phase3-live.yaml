@@ -85,7 +85,13 @@ position:
   trail_activation_frac: 0.5
   exit_horizon_mult: 3.33
   stop_mult: 3.0
+  # Retained for backward compatibility; no longer read by the exit logic.
+  # The beta-drift exit now uses a posterior-σ trigger plus a spread-level
+  # PnL gate (see positions._spread_pnl_should_exit).
   beta_shift_max: 0.2
+  # Beta-drift trigger: |Δβ| / posterior sd(β). Only a trigger; the exit also
+  # requires a non-positive posterior predictive net PnL on the spread.
+  beta_shift_min_posterior_sd: 2.0
 risk:
   max_concurrent_positions: 10
   # Gross leg notional (|leg A| + |leg B|) across open pairs.
