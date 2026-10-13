@@ -1,0 +1,15 @@
+[Unit]
+Description=Research-only Hyperliquid spot/perp funding hypothesis v1
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/hlbot/hyperliquid-stat-arb-bot
+Environment="PYTHONPATH=/home/hlbot/hyperliquid-stat-arb-bot"
+ExecStart=/home/hlbot/hyperliquid-stat-arb-bot/.venv/bin/python scripts/funding_harvest_cycle.py --loop
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target

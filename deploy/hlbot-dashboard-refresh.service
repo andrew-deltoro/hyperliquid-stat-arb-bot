@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh human-facing Hyperliquid research dashboards
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/hlbot/hyperliquid-stat-arb-bot
+Environment="PYTHONPATH=/home/hlbot/hyperliquid-stat-arb-bot"
+ExecStart=/home/hlbot/hyperliquid-stat-arb-bot/.venv/bin/python scripts/refresh_research_dashboards.py --loop
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target
