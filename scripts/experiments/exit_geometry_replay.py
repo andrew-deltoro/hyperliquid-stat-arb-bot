@@ -129,17 +129,16 @@ def main() -> None:
         paths.append((s_ent, S, sgn, beta))
         is_rsr.append("RSR" in r["pair"])
 
-        # weighting: legs are N/(1+b) and bN/(1+b)
-        wA, wB = 1.0 / (1.0 + beta), beta / (1.0 + beta)
+        # weighting: legs are N/(1+beta) and beta*N/(1+beta), so
+        # gross per unit notional = s * dS / (1 + beta)   [not s*dS/2]
+        scale = 1.0 / (1.0 + beta)
 
         for k in CROSS:
             for m in STOP:
                 for H in HOURS:
                     idx, reason = replay(S, s_ent, k, m, H, sgn)
                     dS = S[idx] - s_ent
-                    # spread P&L in return units, then to per-unit-notional
-                    gross = sgn * dS * wA * 0.5 + sgn * dS * wB * 0.5
-                    net = gross - COST
+                    net = sgn * dS * scale - COST
                     res[(k, m, H)].append(net)
                     reasons[(k, m, H)][reason] = reasons[(k, m, H)].get(reason, 0) + 1
 
@@ -169,8 +168,7 @@ def main() -> None:
         a, b = r["pair"].split("/", 1)
         s_ent, S, sgn, beta = paths[i]
         idx, reason = replay(S, s_ent, 0.75, 3.0, 72, sgn)
-        wA = 1.0 / (1.0 + beta)
-        net = sgn * (S[idx] - s_ent) * wA - COST
+        net = sgn * (S[idx] - s_ent) / (1.0 + beta) - COST
         print(f"{r['pair']:<20}{s_ent:>9.4f}{S[idx]-s_ent:>9.4f}{net:>+9.4%}{reason:>8}")
     print()
 
