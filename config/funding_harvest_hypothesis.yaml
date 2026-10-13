@@ -1,0 +1,76 @@
+# LOCKED 2026-10-09 before collection and scoring.
+# Any change to an entry, exit, asset, or cost rule creates a new hypothesis.
+# Research-only: no wallet, signing key, transfers, or order endpoint is used.
+
+hypothesis_id: hl-spot-perp-positive-funding-7d-v1
+mode: paper
+api_url: https://api.hyperliquid.xyz/info
+
+# These mappings are explicit because permissionless spot symbols can collide.
+# BTC and ETH use the Unit wrapped assets documented by Hyperliquid.
+assets:
+  BTC:
+    spot_pair: "@142"
+    spot_token: UBTC
+    token_id: "0x8f254b963e8468305d409b33aa137c67"
+  ETH:
+    spot_pair: "@151"
+    spot_token: UETH
+    token_id: "0xe1edd30daaf5caac3fe63569e24748da"
+  HYPE:
+    spot_pair: "@107"
+    spot_token: HYPE
+    token_id: "0x0d01dc56dcaaca66ad901c959b4011ec"
+  PURR:
+    spot_pair: PURR/USDC
+    spot_token: PURR
+    token_id: "0xc1fb593aeffbeb02f85e0308e9956a90"
+
+entry:
+  evaluation_hour_utc: 0
+  evaluation_minute_utc: 5
+  grace_minutes: 10
+  lookback_hours: 24
+  minimum_hourly_prints: 20
+  require_every_print_positive: true
+  one_open_position_per_coin: true
+  intended_notional_usd: 500.0
+  minimum_perp_day_volume_usd: 1000000.0
+  maximum_spot_perp_mid_divergence: 0.02
+
+exit:
+  hold_hours: 168
+  close_on_first_negative_funding_print: true
+
+execution_model:
+  order_type: market
+  require_full_visible_book_fill: true
+  # Base public tier-0 rates from Hyperliquid's fee schedule. No referral,
+  # staking, VIP, stable-pair, aligned-quote, or maker discount is assumed.
+  spot_taker_fee_rate: 0.00070
+  perp_taker_fee_rate: 0.00045
+  legs: [entry_buy_spot, entry_sell_perp, exit_sell_spot, exit_buy_perp]
+
+measurement:
+  # Funding payment = size * oracle * hourly rate. Because fundingHistory
+  # has no oracle field, the collector stores public oracle snapshots.
+  nearest_oracle_tolerance_minutes: 10
+  collector_interval_seconds: 300
+
+inference:
+  unit: entry_date
+  minimum_independent_entry_dates: 30
+  locked_sample: first_30_complete_entry_dates
+  support_if_probability_mean_gt_zero_at_least: 0.95
+  posterior_draws: 50000
+  seed: 20261009
+  prior:
+    family: normal_inverse_gamma
+    mean_usd: 0.0
+    kappa: 0.25
+    alpha: 2.0
+    beta: 4.0
+
+outputs:
+  database: state/funding_harvest_v1.db
+  report: state/funding_harvest_v1_report.json
