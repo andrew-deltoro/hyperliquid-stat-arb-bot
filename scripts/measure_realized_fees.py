@@ -29,9 +29,21 @@ from hyperliquid.info import Info  # noqa: E402
 from hyperliquid.utils import constants  # noqa: E402
 
 from src.hyperliquid_bot.phase3.funding import fees_for_position  # noqa: E402
-from src.hyperliquid_bot.phase3.paths import REPORTS_DIR  # noqa: E402
 
 NETWORK = "mainnet"
+
+# Live reports live in the runtime dir, which only resolves from REPORTS_DIR
+# when HLBOT_RUNTIME_DIR is exported. Fall back explicitly so the tool works
+# when run by hand.
+_LIVE_REPORTS = Path("/home/hlbot/hlbot-runtime/live/reports")
+
+
+def _default_trades() -> Path:
+    from src.hyperliquid_bot.phase3.paths import REPORTS_DIR
+    for cand in (REPORTS_DIR / "trades.csv", _LIVE_REPORTS / "trades.csv"):
+        if cand.exists():
+            return cand
+    return REPORTS_DIR / "trades.csv"
 
 
 def _info() -> Info:
@@ -113,7 +125,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--fills", action="store_true",
                     help="show whole-account maker/taker mix instead of per-trade")
-    ap.add_argument("--trades", default=str(REPORTS_DIR / "trades.csv"))
+    ap.add_argument("--trades", default=str(_default_trades()))
     args = ap.parse_args()
 
     wallet = _wallet()
