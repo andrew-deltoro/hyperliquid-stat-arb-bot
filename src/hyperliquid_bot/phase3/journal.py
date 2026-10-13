@@ -20,6 +20,8 @@ from .paths import REPORTS_DIR
 
 TRADES_FILE = REPORTS_DIR / "trades.csv"
 SIGNALS_FILE = REPORTS_DIR / "signals.csv"
+# Realized per-fill fees, written at position close for cost attribution.
+FEES_FILE = REPORTS_DIR / "fees.csv"
 
 
 TRADES_COLUMNS = [
@@ -39,6 +41,11 @@ TRADES_COLUMNS = [
     # Per-leg attribution: separates the spread reversion we *intend* to
     # capture from a single-leg trend that happens to be in the pair.
     "pnl_a_usd", "pnl_b_usd", "leg_a_pct", "leg_b_pct",
+    # Realized cost measurement. `fees_usd` is read back from the exchange;
+    # `pending_reason` is where fee_* disagree with fees_usd so the record shows
+    # any slippage the realized-price PnL failed to capture.
+    "fees_usd", "maker_fills", "taker_fills",
+    "realized_fee_pct", "modeled_cost_usd", "pending_reason",
 ]
 
 # Columns appended in later revisions; journal strips legacy duplicates.
@@ -162,6 +169,7 @@ def compute_pnl(
     fee_pct: float = 0.00045,
     slippage_bps: float = 3.0,
     funding_usd: float = 0.0,
+    fees_usd: Optional[float] = None,
 ) -> tuple[float, float]:
     """
     Realized P&L in USD and pct of deployed notional, NET of fees,
@@ -170,20 +178,29 @@ def compute_pnl(
     LONG_A_SHORT_B: long A, short B
     SHORT_A_LONG_B: short A, long B
 
-    Cost model:
+    Cost model (used only when fees_usd is not supplied):
       - fee_pct applied to notional on entry AND exit
       - slippage_bps applied to notional on entry AND exit
       - funding_usd: sum of account funding payments on both coins while open
         (positive = received)
+
+    When fees_usd is supplied, the fee term becomes the *measured* round-trip
+    fee from the exchange and the fee_pct model is skipped. The slippage
+    allowance is deliberately kept even then: entry/exit prices are fill
+    prices, so the model's slippage term is unmeasured, and keeping it makes
+    the net figure a conservative estimate rather than a flattering one.
     """
     pnl_a, pnl_b, leg_a, leg_b = _leg_pnls(pos, exit_price_a, exit_price_b)
     gross_pnl = pnl_a + pnl_b
 
     # Round-trip cost model:
-    #   fee:     notional × fee_pct × 2 sides
+    #   fee:      measured (fees_usd) or notional × fee_pct × 2 sides
     #   slippage: notional × (bps/10000) × 2 sides
     notional_total = leg_a + leg_b
-    fee_cost = notional_total * fee_pct * 2.0
+    if fees_usd is None:
+        fee_cost = notional_total * fee_pct * 2.0
+    else:
+        fee_cost = float(fees_usd)
     slippage_cost = notional_total * (slippage_bps / 10000.0) * 2.0
 
     net_pnl = gross_pnl - fee_cost - slippage_cost + float(funding_usd)
@@ -224,8 +241,12 @@ def log_trade(pos: dict, exit_price_a: float, exit_price_b: float,
     elapsed_hours = (exit_dt - entry_dt).total_seconds() / 3600.0
 
     funding_usd = float(pos.get("funding_usd", funding_usd) or 0.0)
+    # Realized fees, if the close path measured them. Falling back to the
+    # configured fee model keeps this function's old behaviour when absent.
+    fees_usd = pos.get("fees_usd")
     pnl_usd, pnl_pct = compute_pnl(
         pos, exit_price_a, exit_price_b, funding_usd=funding_usd,
+        fees_usd=fees_usd,
     )
     leg_pnl_a, leg_pnl_b, leg_ntl_a, leg_ntl_b = _leg_pnls(
         pos, exit_price_a, exit_price_b,
@@ -262,5 +283,14 @@ def log_trade(pos: dict, exit_price_a: float, exit_price_b: float,
         "pnl_b_usd": f"{leg_pnl_b:.4f}",
         "leg_a_pct": f"{leg_pnl_a / (leg_ntl_a + 1e-9):.6f}",
         "leg_b_pct": f"{leg_pnl_b / (leg_ntl_b + 1e-9):.6f}",
+        "fees_usd": "" if fees_usd is None else f"{float(fees_usd):.6f}",
+        "maker_fills": str(pos.get("maker_fills", "")),
+        "taker_fills": str(pos.get("taker_fills", "")),
+        "realized_fee_pct": (
+            "" if fees_usd is None
+            else f"{float(fees_usd) / ((leg_ntl_a + leg_ntl_b) * 2 + 1e-9):.6f}"
+        ),
+        "modeled_cost_usd": f"{(leg_ntl_a + leg_ntl_b) * 0.00045 * 2:.6f}",
+        "pending_reason": "",
     }
     _append_row(TRADES_FILE, TRADES_COLUMNS, row)

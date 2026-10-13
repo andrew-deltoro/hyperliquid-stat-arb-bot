@@ -795,8 +795,26 @@ class PositionManager:
                 except Exception as e:
                     self.log_fn(f"[FUNDING] {pos['pair']}: query failed: {e}")
             pos["funding_usd"] = funding_usd
+            # Measure realized fees from the exchange (read-only; the close
+            # itself already happened). This replaces the assumed fee model
+            # with what we were actually charged, and records maker/taker mix.
+            try:
+                from .funding import log_fees
+                fees = log_fees(info, wallet, pos, journal.FEES_FILE)
+                if fees.get("source") == "ok":
+                    pos["fees_usd"] = fees["total"]
+                    pos["maker_fills"] = fees["maker_fills"]
+                    pos["taker_fills"] = fees["taker_fills"]
+                    self.log_fn(
+                        f"[FEES] {pos['pair']}: ${fees['total']:.4f} "
+                        f"(maker={fees['maker_fills']} taker={fees['taker_fills']}) "
+                        f"vs modeled ${(pos['leg_a_usd'] + pos['leg_b_usd']) * 0.00045 * 2:.4f}"
+                    )
+            except Exception as e:  # noqa: BLE001
+                self.log_fn(f"[FEES] {pos['pair']}: capture failed: {e}")
             pnl_usd, pnl_pct = journal.compute_pnl(
                 pos, exit_price_a, exit_price_b, funding_usd=funding_usd,
+                fees_usd=pos.get("fees_usd"),
             )
             pos["pnl_usd"] = pnl_usd
             pos["pnl_pct"] = pnl_pct
