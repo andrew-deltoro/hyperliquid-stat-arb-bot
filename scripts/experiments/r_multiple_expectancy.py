@@ -37,14 +37,18 @@ def main() -> None:
     print(f"{'pair':<20}{'reason':<16}{'risk':>8}{'reward':>9}{'R':>8}{'net$':>9}")
     print("-" * 72)
     R, net, rr, rew, pair = [], [], [], [], []
+    # The live config is cross mode: the ACTIVE reward is the opposite-side
+    # level -cross_frac*entry_spread, NOT target_spread (which is computed in
+    # positions.py but unused when exit_mode == "cross").
+    cross_frac = 0.75
     for r in rows:
         es = float(r["entry_spread"])
         xs = float(r["exit_spread"])
-        tg = float(r["target_spread"])
         st = float(r["stop_spread"])
         n = float(r["pnl_usd"] or 0)
+        is_cross = r.get("exit_reason") in ("cross", "operator_close") or True
         risk = abs(es - st)
-        reward = abs(es - tg)
+        reward = ((1.0 + cross_frac) * abs(es)) if is_cross else abs(es - float(r["target_spread"]))
         fav = -np.sign(es) * (xs - es) if es != 0 else 0.0
         R.append(fav / risk if risk > 0 else 0.0)
         node = R[-1]
@@ -71,18 +75,22 @@ def main() -> None:
     print(f"  => RSR contribution: {net[is_rsr].sum()/net.sum()*100:.0f}% of all P&L"
           if net.sum() else "")
 
-    print(f"\nmean reward/risk geometry: "
+    print(f"\nmean configured geometry (cross mode): "
           f"reward={rew.mean():.4f} risk={rr.mean():.4f} "
-          f"=> target is only {rew.mean()/rr.mean()*100:.0f}% of the stop distance")
+          f"=> reward/risk = {rew.mean()/rr.mean():.2f} : 1")
     w = net > 0
     if w.any() and (~w).any():
         print(f"payoff ratio      : {R[w].mean()/abs(R[~w].mean()):.2f} "
               f"(winners {R[w].mean():+.2f}R vs losers {R[~w].mean():+.2f}R)")
         be = 1 / (1 + R[w].mean() / abs(R[~w].mean()))
         print(f"breakeven win rate: {be:.0%}  vs actual {(net > 0).mean():.0%}")
-        print("\nA target at ~0.25R with a 1R stop needs a very high hit rate. "
-              "This geometry only works if the stop is far tighter or the "
-              "target far wider than configured.")
+    print("\nIn cross mode the active reward is the opposite-side level "
+          f"-{cross_frac}*entry, so reward:risk is ~1.33:1 -- NOT the "
+          "target_frac value, which positions.py computes but never uses "
+          "when exit_mode == 'cross'.")
+    print("Notice the `time` column: almost every exit was the TIME STOP, "
+          "not the cross level. The spread mostly never reached +/-0.75 "
+          "of entry, so the exit rule is effectively a time-based exit.")
 
 
 if __name__ == "__main__":
