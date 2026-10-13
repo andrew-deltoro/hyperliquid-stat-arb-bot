@@ -15,6 +15,7 @@ from ..stats.cointegration import (
 from ..stats.error_correction import fit_error_correction
 from ..stats.mean_reversion import fit_ou, position_size
 from .leverage import exit_policy_from_cfg, simulate_trade_returns
+from .shock import pair_shock_state
 
 def _ensemble_z(log_a, log_b, lookbacks_hours):
     """Fit cointegration at multiple lookbacks, average z-scores equally.
@@ -98,6 +99,10 @@ class Signal:
     spread_for_sim: Optional[np.ndarray] = field(default=None, repr=False)
     kappa_draws: Optional[np.ndarray] = field(default=None, repr=False)
     sigma_draws: Optional[np.ndarray] = field(default=None, repr=False)
+    # Single-leg shock annotation (see shock.py). Descriptive only unless
+    # signal.shock_guard.block is true; journaled so the post-shock forward
+    # relationship can be measured on our own book before it gates anything.
+    shock: dict = field(default_factory=dict)
 
 def _should_use_kalman(pair: str, cfg) -> bool:
     """Kalman smoothing helps fast-reverting crypto pairs (walk-forward:
@@ -339,6 +344,31 @@ def generate_signal(
     threshold = z_thresh_wide if z > 0 else z_thresh_tight
     min_ret = float(cfg.signal.get("min_expected_return", 0.0))
 
+    # Single-leg shock annotation. Cheap; never raises. Adds a block reason
+    # only when signal.shock_guard.block is explicitly enabled.
+    shock_summary: dict = {}
+    shock_block_reason = ""
+    if cfg.signal.get("shock_guard", None):
+        try:
+            _, _, shock_summary = pair_shock_state(
+                coin_a, coin_b, cfg,
+                interval=cfg.data["interval"],
+                lookback_hours=int(cfg.data["lookback_hours"]),
+            )
+            if shock_summary.get("is_shock"):
+                side = shock_summary.get("side") or "?"
+                print(f"[SHOCK] {pair}: {side}-leg 1h shock "
+                      f"{shock_summary['magnitude']*100:.1f}% "
+                      f"({shock_summary['hours_since']}h ago), "
+                      f"cooldown={shock_summary['in_cooldown']}")
+            if shock_summary.get("block") and shock_summary.get("in_cooldown"):
+                shock_block_reason = (
+                    f"post_shock_cooldown_{shock_summary['hours_since']}h"
+                )
+        except Exception as e:  # noqa: BLE001
+            print(f"[SHOCK] {pair}: failed ({type(e).__name__}: {e})")
+
+
     max_vol = cfg.signal.get("max_btc_vol", 1.0)
     checks = [
         (models_ok, "model_not_converged"),
@@ -352,6 +382,7 @@ def generate_signal(
         (dist.exp_return > min_ret, "expected_return_too_small"),
         (kelly_mode or edge >= cfg.signal["edge_min"], "edge_too_small"),
         (kelly_mode or notional > 0, "notional_zero"),
+        (not shock_block_reason, shock_block_reason or "shock_cooldown"),
     ]
     failed = [reason for ok, reason in checks if not ok]
 
@@ -393,4 +424,5 @@ def generate_signal(
         spread_for_sim=np.asarray(spread_for_sim, dtype=float),
         kappa_draws=np.asarray(kappa_s, dtype=float),
         sigma_draws=np.asarray(sigma_s, dtype=float),
+        shock=shock_summary,
     )

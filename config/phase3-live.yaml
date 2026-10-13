@@ -75,6 +75,18 @@ signal:
   min_p_kappa: 0.80
   # Minimum posterior-predictive E[net trade return] per unit notional.
   min_expected_return: 0.0
+  # Single-leg shock detector (shock.py). Observability first.
+  # Empirically a 1h >=5% / vol-z>=3 shock is NOT an edge in either direction
+  # net of costs (momentum_event_study.py, 180d, 225 events), and the change-z
+  # reversion rule failed walk-forward. So block is OFF: annotate and journal
+  # shocks, then decide from our own book. Set block: true later to skip pair
+  # entries for block_hours after a leg shock.
+  shock_guard:
+    block: false
+    move_min: 0.05
+    vol_z_min: 3.0
+    vol_window: 168
+    block_hours: 6
 position:
   # base_notional / baseline_balance / compounding only apply when
   # leverage.mode is not "kelly".

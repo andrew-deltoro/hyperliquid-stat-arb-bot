@@ -36,7 +36,13 @@ TRADES_COLUMNS = [
     "p_revert_at_entry",
     "exp_return_at_entry",
     "funding_usd",
+    # Per-leg attribution: separates the spread reversion we *intend* to
+    # capture from a single-leg trend that happens to be in the pair.
+    "pnl_a_usd", "pnl_b_usd", "leg_a_pct", "leg_b_pct",
 ]
+
+# Columns appended in later revisions; journal strips legacy duplicates.
+TRADES_DEDUP_KEY = "pair"
 
 
 SIGNALS_COLUMNS = [
@@ -50,6 +56,7 @@ SIGNALS_COLUMNS = [
     "direction", "action",
     "skip_reason",
     "exp_return", "stress_loss_frac", "eg_tstat",
+    "shock_side", "shock_hours_since", "shock_magnitude",
 ]
 
 
@@ -119,7 +126,33 @@ def log_signal(sig) -> None:
         "stress_loss_frac": f"{getattr(sig, 'stress_loss_frac', 0.0):.6f}",
         "eg_tstat": f"{getattr(sig, 'eg_tstat', 0.0):.3f}",
     }
+    shock = getattr(sig, "shock", None) or {}
+    hs = shock.get("hours_since")
+    row.update({
+        "shock_side": shock.get("side") or "",
+        "shock_hours_since": "" if hs is None else str(int(hs)),
+        "shock_magnitude": "" if not shock.get("is_shock") else f"{shock.get('magnitude', 0.0):.6f}",
+    })
     _append_row(SIGNALS_FILE, SIGNALS_COLUMNS, row)
+
+
+def _leg_pnls(pos: dict, exit_price_a: float, exit_price_b: float) -> tuple[float, float, float, float]:
+    """Gross P&L per leg in USD plus the deployed notional of each leg."""
+    if "entry_size_a" in pos and "entry_size_b" in pos:
+        # Signed filled quantities: exact for what the exchange holds.
+        qa, qb = float(pos["entry_size_a"]), float(pos["entry_size_b"])
+        pnl_a = qa * (exit_price_a - pos["entry_price_a"])
+        pnl_b = qb * (exit_price_b - pos["entry_price_b"])
+        leg_a = abs(qa) * pos["entry_price_a"]
+        leg_b = abs(qb) * pos["entry_price_b"]
+    else:
+        sign_a = 1.0 if pos["direction"] == "LONG_A_SHORT_B" else -1.0
+        sign_b = -sign_a
+        leg_a = abs(pos["leg_a_usd"])
+        leg_b = abs(pos["leg_b_usd"])
+        pnl_a = leg_a * sign_a * (exit_price_a / pos["entry_price_a"] - 1.0)
+        pnl_b = leg_b * sign_b * (exit_price_b / pos["entry_price_b"] - 1.0)
+    return float(pnl_a), float(pnl_b), float(leg_a), float(leg_b)
 
 
 def compute_pnl(
@@ -143,20 +176,7 @@ def compute_pnl(
       - funding_usd: sum of account funding payments on both coins while open
         (positive = received)
     """
-    if "entry_size_a" in pos and "entry_size_b" in pos:
-        # Signed filled quantities: exact for what the exchange holds.
-        qa, qb = float(pos["entry_size_a"]), float(pos["entry_size_b"])
-        pnl_a = qa * (exit_price_a - pos["entry_price_a"])
-        pnl_b = qb * (exit_price_b - pos["entry_price_b"])
-        leg_a = abs(qa) * pos["entry_price_a"]
-        leg_b = abs(qb) * pos["entry_price_b"]
-    else:
-        sign_a = 1.0 if pos["direction"] == "LONG_A_SHORT_B" else -1.0
-        sign_b = -sign_a
-        leg_a = abs(pos["leg_a_usd"])
-        leg_b = abs(pos["leg_b_usd"])
-        pnl_a = leg_a * sign_a * (exit_price_a / pos["entry_price_a"] - 1.0)
-        pnl_b = leg_b * sign_b * (exit_price_b / pos["entry_price_b"] - 1.0)
+    pnl_a, pnl_b, leg_a, leg_b = _leg_pnls(pos, exit_price_a, exit_price_b)
     gross_pnl = pnl_a + pnl_b
 
     # Round-trip cost model:
@@ -207,6 +227,9 @@ def log_trade(pos: dict, exit_price_a: float, exit_price_b: float,
     pnl_usd, pnl_pct = compute_pnl(
         pos, exit_price_a, exit_price_b, funding_usd=funding_usd,
     )
+    leg_pnl_a, leg_pnl_b, leg_ntl_a, leg_ntl_b = _leg_pnls(
+        pos, exit_price_a, exit_price_b,
+    )
 
     row = {
         "pair": pos["pair"],
@@ -235,5 +258,9 @@ def log_trade(pos: dict, exit_price_a: float, exit_price_b: float,
             f"{pos['exp_return_at_entry']:.6f}" if "exp_return_at_entry" in pos else ""
         ),
         "funding_usd": f"{funding_usd:.6f}",
+        "pnl_a_usd": f"{leg_pnl_a:.4f}",
+        "pnl_b_usd": f"{leg_pnl_b:.4f}",
+        "leg_a_pct": f"{leg_pnl_a / (leg_ntl_a + 1e-9):.6f}",
+        "leg_b_pct": f"{leg_pnl_b / (leg_ntl_b + 1e-9):.6f}",
     }
     _append_row(TRADES_FILE, TRADES_COLUMNS, row)
