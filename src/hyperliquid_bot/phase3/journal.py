@@ -51,8 +51,11 @@ TRADES_COLUMNS = [
     "exit_detail",
 ]
 
-# Columns appended in later revisions; journal strips legacy duplicates.
-TRADES_DEDUP_KEY = "pair"
+# Identity of a closed-trade row. NOT the pair: the bot opens the same pair many
+# times, and keying on "pair" silently collapses distinct trades (the live
+# journal shows 11 extra SNX/DYDX episodes across 8 pairs in positions.json
+# versus trades.csv). positions.json is now the complete history.
+TRADES_DEDUP_KEY = "entry_time_iso"
 
 
 SIGNALS_COLUMNS = [

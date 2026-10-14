@@ -88,6 +88,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
 from src.hyperliquid_bot.data import ohlcv  # noqa: E402
+from src.hyperliquid_bot.phase3 import journal  # noqa: E402
 from src.hyperliquid_bot.phase3 import positions as P  # noqa: E402
 from src.hyperliquid_bot.phase3.config import load_config  # noqa: E402
 from src.hyperliquid_bot.phase3.executor import BaseExecutor  # noqa: E402
@@ -164,6 +165,7 @@ class Entry:
     samples: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int64))
     t0_idx: int = 0
     date: str = ""
+    rec: dict | None = None
 
     @property
     def sign(self) -> float:
@@ -216,6 +218,18 @@ def build_entries(positions: list[dict], signals: list[dict],
                   key=lambda t: abs((datetime.fromisoformat(t["entry_time_iso"])
                                      - entry_time).total_seconds()),
                   default=None)
+        # Only a near-exact entry timestamp identifies the same episode. A
+        # closed position with no such row means the trade journal lost or never
+        # wrote it (see TRADES_DEDUP_KEY in journal.py), so its PnL is unknown
+        # and must NOT be borrowed from another trade on the same pair.
+        if rec is not None and abs((datetime.fromisoformat(rec["entry_time_iso"])
+                                    - entry_time).total_seconds()) > 300:
+            rec = None
+        recorded_pnl = _f(rec, "pnl_usd")
+        recorded_pct = _f(rec, "pnl_pct")
+        if rec is None and pos.get("status") == "closed":
+            recorded_pnl = float("nan")
+            recorded_pct = float("nan")
         entries.append(Entry(
             pair=pair, coin_a=pos["coin_a"], coin_b=pos["coin_b"],
             direction=pos["direction"],
@@ -230,8 +244,8 @@ def build_entries(positions: list[dict], signals: list[dict],
             target_spread=float(pos.get("target_spread") or 0.0),
             stop_spread=float(pos.get("stop_spread") or 0.0),
             recorded_reason=pos.get("exit_reason") or "still_open",
-            recorded_pnl_usd=_f(rec, "pnl_usd"),
-            recorded_pnl_pct=_f(rec, "pnl_pct"),
+            recorded_pnl_usd=recorded_pnl,
+            recorded_pnl_pct=recorded_pct,
             notional_usd=float(pos.get("notional_usd") or 0.0),
             leg_usd=abs(float(pos.get("leg_a_usd") or 0.0))
             + abs(float(pos.get("leg_b_usd") or 0.0)),
@@ -243,6 +257,7 @@ def build_entries(positions: list[dict], signals: list[dict],
             kappa=_f(sig, "kappa", 0.0),
             status=pos.get("status", "?"),
             original=pos,
+            rec=rec,
         ))
     return entries, skipped
 
@@ -329,6 +344,83 @@ def attach_paths(entries: list[Entry], signals: list[dict],
             print(f"  {e.pair:<16}{e.status:<7}bars={len(e.spread_path):>5} "
                   f"cycles={len(e.samples):>4} rec={e.recorded_reason:<16} "
                   f"pnl=${e.recorded_pnl_usd:>+7.2f} drift@entry={drift:+.4f}")
+
+
+def recorded_exit_price(e: Entry) -> tuple[float, float] | None:
+    """The exit prices the trade actually filled at.
+
+    The authoritative source is the closed-trade journal row (trades.csv).
+    Older state records may carry exit_fill_price_{a,b} instead.
+    """
+    for src in (e.rec, e.original):
+        if not src:
+            continue
+        pa = _f(src, "exit_price_a") or _f(src, "exit_fill_price_a")
+        pb = _f(src, "exit_price_b") or _f(src, "exit_fill_price_b")
+        if pa and pb:
+            return pa, pb
+    return None
+
+
+def ledger_fit(e: Entry, cfg) -> dict:
+    """Compare the bot's OWN accounting on the realized path -- no replay rules.
+
+    This isolates "does the spread->PnL->cost model fit the trades that actually
+    happened" from "would a different exit rule have done better":
+      1. recompute the entry-frame spread at the recorded exit prices -- tests
+         that entry_alpha / beta_entry / entry_mean_raw are the right frame;
+      2. mark to the recorded exit PRICE through journal.compute_pnl -- tests
+         the bot's cost, funding and leg-attribution model.
+    """
+    px = recorded_exit_price(e)
+    if px is None:
+        return {"ok": False, "why": "no exit price"}
+    if e.rec is None:
+        # Closed, but the trade journal has no row for this episode, so there is
+        # no recorded PnL to fit against. Do not borrow another trade's number.
+        return {"ok": False, "why": "journal row missing"}
+    pa, pb = px
+    src = e.rec or e.original
+    rec_spread = _f(src, "exit_spread")
+    rec_pnl = _f(src, "pnl_usd") if e.rec else e.recorded_pnl_usd
+    rec_pct = _f(src, "pnl_pct") if e.rec else e.recorded_pnl_pct
+    exit_fill = (_f(e.rec, "exit_price_a") if e.rec else 0.0) != 0.0
+
+    # 1. coordinate-frame check
+    raw = math.log(pa) - e.alpha - e.beta_entry * math.log(pb)
+    spread_now = raw - e.mean_raw
+    spread_err = spread_now - rec_spread
+    ret_pct = e.ret(spread_now)
+
+    # 2. accounting check through the bot's own PnL function
+    pos = {"direction": e.direction, "entry_price_a": float(e.original["entry_price_a"]),
+           "entry_price_b": float(e.original["entry_price_b"]),
+           "leg_a_usd": float(e.original.get("leg_a_usd") or 0.0),
+           "leg_b_usd": float(e.original.get("leg_b_usd") or 0.0),
+           "notional_usd": e.notional_usd}
+    for k in ("entry_size_a", "entry_size_b"):
+        if k in e.original:
+            pos[k] = e.original[k]
+    fees = src.get("fees_usd", e.original.get("fees_usd"))
+    fees = None if fees in (None, "") else float(fees)
+    funding = _f(src, "funding_usd") or _f(e.original, "funding_usd")
+    pnl_usd, pnl_pct = journal.compute_pnl(
+        pos, pa, pb, funding_usd=funding, fees_usd=fees)
+    return {
+        "ok": True,
+        "exit_is_fill": exit_fill,
+        "spread_replay": spread_now,
+        "spread_recorded": rec_spread,
+        "spread_err": spread_err,
+        "ret_pct": ret_pct,
+        "pnl_recomputed_usd": pnl_usd,
+        "pnl_recorded_usd": rec_pnl,
+        "pnl_err_usd": pnl_usd - rec_pnl,
+        "pnl_recomputed_pct": pnl_pct,
+        "pnl_recorded_pct": rec_pct,
+        "has_measured_fees": fees is not None,
+        "funding_usd": funding,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -511,6 +603,8 @@ VARIANTS = [
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--sweep", action="store_true")
+    ap.add_argument("--fit", action="store_true",
+                    help="ledger fit: replay vs the trades that actually closed")
     ap.add_argument("--list", action="store_true")
     args = ap.parse_args()
 
@@ -554,6 +648,60 @@ def main() -> None:
     print(f"replayed mean {base_ret.mean()*1e4:+.1f} bp/trade (gross, spread frame)")
     print(f"recorded mean {rec_ret.mean()*1e4:+.1f} bp/trade "
           f"(realized, includes 15 bps modeled cost + funding)")
+
+    if args.fit:
+        print("\n" + "=" * 100)
+        print("LEDGER FIT: does the bot's own spread->PnL->cost model reproduce "
+              "the closed trades?")
+        print("=" * 100)
+        print("spread_err = replay's exit-frame spread minus the recorded one "
+              "(tests entry_alpha/beta/mean_raw)")
+        print("pnl_err    = recomputed USD minus recorded USD "
+              "(tests cost, funding and leg attribution)\n")
+        print(f"{'pair':<18}{'recorded$':>10}{'recomp$':>10}{'pnl_err':>9}"
+              f"{'spread_err':>12}{'ret%':>9}{'close':>7}{'fees':>7}")
+        rows = []
+        for e in entries:
+            r = ledger_fit(e, cfg)
+            if not r["ok"]:
+                print(f"{e.pair:<18}{'--':>10}{'--':>10}{'--':>9}{'--':>12}"
+                      f"{'--':>9}{r['why']:>20}")
+                continue
+            rows.append((e, r))
+            if abs(r["pnl_err_usd"]) < 0.05:
+                verdict = "exact"
+            elif abs(r["spread_err"]) < 0.02:
+                verdict = "close"
+            else:
+                verdict = "MISS"
+            print(f"{e.pair:<18}{r['pnl_recorded_usd']:>+10.2f}"
+                  f"{r['pnl_recomputed_usd']:>+10.2f}{r['pnl_err_usd']:>+9.2f}"
+                  f"{r['spread_err']:>+12.2e}{r['ret_pct']*100:>+8.2f}%{verdict:>7}"
+                  f"{('measured' if r['has_measured_fees'] else 'modeled'):>8}")
+
+        if rows:
+            err = np.array([r["pnl_err_usd"] for _, r in rows])
+            sp_err = np.array([abs(r["spread_err"]) for _, r in rows])
+            exact = sum(1 for _, r in rows if abs(r["pnl_err_usd"]) < 0.05)
+            close = sum(1 for _, r in rows if abs(r["spread_err"]) < 0.02)
+            print(f"\n{exact}/{len(rows)} trades reproduce to the cent "
+                  f"(|pnl_err| < $0.05)")
+            print(f"{close}/{len(rows)} have |spread_err| < 0.02 "
+                  f"(2% of a unit spread)")
+            print(f"pnl_err  mean {err.mean():+.3f}  median {np.median(err):+.3f}  "
+                  f"max |err| {np.abs(err).max():.3f} USD")
+            print(f"spread_err  mean {sp_err.mean():.2e}  max {sp_err.max():.2e}")
+            print(f"measured fees on {sum(1 for _, r in rows if r['has_measured_fees'])}"
+                  f"/{len(rows)} trades (blank => modeled 15 bps)")
+            print(f"exit prices taken from actual fills: "
+                  f"{sum(1 for _, r in rows if r['exit_is_fill'])}/{len(rows)}")
+            print("\nReading: a near-zero pnl_err with modeled fees means the "
+                  "recomputation agrees with the bot's own arithmetic -- it does "
+                  "NOT validate the 15 bps assumption against the exchange.")
+            print("A non-zero spread_err on a row whose pnl_err is exact means the "
+                  "journal's exit_spread was measured at a different moment than "
+                  "the fill price (the bot re-evaluated between the decision and "
+                  "the close); the model still fits, the record is just imprecise.")
 
     if not args.sweep:
         print("\n(run with --sweep for the paired exit counterfactual)")
