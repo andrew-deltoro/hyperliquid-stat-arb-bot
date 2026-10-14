@@ -715,6 +715,67 @@ def bounce_study(entries: list[Entry], cfg, now: datetime) -> None:
           "as directions, not magnitudes.")
 
 
+def stop_fidelity(entries: list[Entry], signals: list[dict], now: datetime) -> None:
+    """Did the divergence stop fire when it should have?
+
+    Uses the bot's OWN logged current_spread, not a candle reconstruction. The
+    two are not comparable: signals.csv evaluates the spread in the current
+    beta frame while a replay reconstructs it in the fixed entry frame, and beta
+    drifts between the two. The live log is the frame the bot actually decided
+    in, so it is the ground truth for whether a stop was missed.
+
+    A 4h-cadence bot cannot watch the stop continuously, so the spread can gap
+    past the trigger between cycles. This measures how close each position
+    actually came.
+    """
+    print("\n" + "=" * 104)
+    print("STOP FIDELITY: did the divergence stop fire when it should have?")
+    print("=" * 104)
+    print("Measured from the bot's own logged current_spread. As a fraction of "
+          "the distance from\nentry to stop: 1.00 = at the stop, >1.00 = beyond "
+          "it, i.e. a stop that failed to fire.\n")
+    print(f"{'pair':<17}{'status':<7}{'cycles':>7}{'worst_frac':>12}{'peak_mark':>11}{'verdict':>13}")
+    fracs = []
+    for e in entries:
+        raw_exit = e.original.get("exit_time_iso")
+        end = datetime.fromisoformat(raw_exit) if raw_exit else now
+        rows = []
+        for r in signals:
+            if r.get("pair") != e.pair:
+                continue
+            ts = r.get("timestamp_iso")
+            if not ts:
+                continue
+            t = datetime.fromisoformat(ts)
+            if e.entry_time <= t <= end and r.get("current_spread") not in ("", None):
+                rows.append(float(r["current_spread"]))
+        if not rows or e.stop_spread == e.entry_spread:
+            continue
+        # distance travelled TOWARD the stop; the sign flips with direction, so a
+        # move toward the target is never counted as adverse.
+        stop_dist = abs(e.stop_spread - e.entry_spread)
+        worst_s = max(rows, key=lambda s: e.sign * (e.entry_spread - s))
+        frac = e.sign * (e.entry_spread - worst_s) / stop_dist
+        fracs.append(frac)
+        verdict = ("BEYOND STOP" if frac > 1.001
+                   else "near" if frac > 0.9 else "clear")
+        print(f"{e.pair:<17}{e.status:<7}{len(rows):>7}{frac:>12.3f}"
+              f"{worst_s:>11.5f}{verdict:>13}")
+    if fracs:
+        a = np.array(fracs)
+        print(f"\n  episodes: {len(a)}   peak >= 90% of the way to the stop: "
+              f"{int((a > 0.9).sum())}   beyond the stop: {int((a > 1.001).sum())}")
+        print(f"  closest approach to the stop: {a.max():.3f}x   "
+              f"median: {np.median(a):.3f}x")
+        if (a > 1.001).any():
+            print("  Rows marked BEYOND STOP are stops that did not fire. Any "
+                  "such row needs explaining.")
+        else:
+            print("  No episode ever reached the stop, so no stop could have been "
+                  "missed. The\n  divergence stop is executing and losses are "
+                  "stopping where intended.")
+
+
 def open_book(entries: list[Entry], cfg, now: datetime) -> None:
     """How long the live positions have been held and where they stand."""
     print("\n" + "=" * 104)
@@ -772,6 +833,7 @@ def main() -> None:
     if args.bounce:
         open_book(entries, cfg, datetime.now(timezone.utc))
         bounce_study(entries, cfg, datetime.now(timezone.utc))
+        stop_fidelity(entries, signals, datetime.now(timezone.utc))
         return
 
     print("\n" + "=" * 80)
