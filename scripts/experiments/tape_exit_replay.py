@@ -600,11 +600,149 @@ VARIANTS = [
 ]
 
 
+# --------------------------------------------------------------------------
+# bounce study: does a position that opens red ever come back?
+# --------------------------------------------------------------------------
+def return_path(e: Entry) -> np.ndarray:
+    """Return on position notional at every hourly bar after entry."""
+    sign = e.sign
+    return 0.5 * sign * (e.spread_path - e.entry_spread)
+
+
+def bounce_study(entries: list[Entry], cfg, now: datetime) -> None:
+    """For each episode: was it red early, did it ever go positive while held,
+    and where did it end?
+
+    The question is operational, not about the exit grid: "if it starts negative
+    and never flips positive, what is the point of holding it". So the window is
+    the period the bot ACTUALLY held the position -- from entry to its realized
+    exit (or to now, for the still-open ones) -- and a flip counts only if it
+    happened inside that window.
+    """
+    print("\n" + "=" * 104)
+    print("BOUNCE STUDY: does a position that opens red ever come back?")
+    print("=" * 104)
+    print("red = return on position notional < 0, i.e. the spread moved against "
+          "the entry.\n")
+
+    rows = []
+    for e in entries:
+        r = return_path(e)
+        n = len(r)
+        if n <= e.t0_idx + 2:
+            continue
+        exit_info = replay(e, cfg, VARIANTS[0])
+        # window the bot actually held it
+        end = (e.t0_idx + exit_info["bars"]) if np.isfinite(exit_info["bars"]) else n - 1
+        end = min(end, n - 1)
+        if end <= e.t0_idx + 1:
+            end = min(e.t0_idx + 2, n - 1)
+
+        r1 = float(r[e.t0_idx + 1]) if e.t0_idx + 1 < n else float("nan")
+        r4 = float(r[e.t0_idx + 4]) if e.t0_idx + 4 < n else float("nan")
+        held = r[e.t0_idx + 1:end + 1]
+        if held.size == 0:
+            continue
+        pos_idx = np.nonzero(held > 0)[0]
+        flipped = bool(pos_idx.size)
+        hours_to_flip = float(pos_idx[0] + 1) if flipped else float("nan")
+        worst = float(held.min())
+        final = float(held[-1])
+        rows.append((e, r1, r4, flipped, hours_to_flip, worst, final,
+                     exit_info["reason"], end - e.t0_idx))
+
+    print(f"{'pair':<17}{'status':<7}{'r@1h':>9}{'r@4h':>9}{'worst':>9}"
+          f"{'flip?':>6}{'hrs_to':>8}{'final':>9}{'held_h':>8}  recorded")
+    for e, r1, r4, fl, htf, worst, final, reason, held_h in sorted(
+            rows, key=lambda x: x[1]):
+        print(f"{e.pair:<17}{e.status:<7}{r1*100:>+8.2f}%{r4*100:>+8.2f}%"
+              f"{worst*100:>+8.2f}%{('yes' if fl else 'NO'):>6}"
+              f"{(f'{htf:.0f}' if fl else '--'):>8}{final*100:>+8.2f}%"
+              f"{held_h:>8}  {reason}")
+
+    if not rows:
+        return
+
+    def stats(sub, label):
+        if not sub:
+            return
+        f = np.array([s[3] for s in sub])
+        fin = np.array([s[6] for s in sub])
+        print(f"  {label:<34}n={len(sub):<4}flipped {f.sum():>2}/{len(sub):<3}"
+              f" ({f.mean()*100:>3.0f}%)   mean final {fin.mean()*1e2:>+6.2f}%"
+              f"   mean worst {np.mean([s[5] for s in sub])*1e2:>+6.2f}%")
+
+    print("\n--- cohort summary (return on position notional) ---")
+    stats(rows, "all episodes")
+    red1 = [s for s in rows if np.isfinite(s[1]) and s[1] < 0]
+    red4 = [s for s in rows if np.isfinite(s[2]) and s[2] < 0]
+    redboth = [s for s in rows if np.isfinite(s[1]) and np.isfinite(s[2])
+               and s[1] < 0 and s[2] < 0]
+    green1 = [s for s in rows if np.isfinite(s[1]) and s[1] >= 0]
+    stats(red1, "red in the first hour")
+    stats(red4, "red at 4h")
+    stats(redboth, "red at BOTH 1h and 4h")
+    stats(green1, "green in the first hour")
+
+    never = [s for s in redboth if not s[3]]
+    flipped = [s for s in redboth if s[3]]
+    stats(never, "  red at 1h+4h, NEVER flipped")
+    stats(flipped, "  red at 1h+4h, later flipped")
+
+    # What the bot actually does with a loser, versus cutting it early.
+    print("\n--- the bot's loss handling ---")
+    print("The bot has no early-cut rule. It holds until the divergence stop "
+          f"(-{cfg.position.get('stop_mult')}x the entry spread), the beta-shift "
+          f"gate, or the horizon "
+          f"({cfg.position.get('exit_horizon_mult')}x half-life).")
+    if redboth:
+        print(f"\nOf the {len(redboth)} episodes red at both 1h and 4h, "
+              f"{len(never)} never traded positive again and {len(flipped)} did.")
+
+    if never:
+        d = np.array([s[6] for s in never]) * 1e2
+        print(f"  never-flipped final: mean {d.mean():+.2f}%  "
+              f"median {np.median(d):+.2f}%  worst {d.min():+.2f}%")
+        cut = np.array([s[2] for s in never]) * 1e2
+        print(f"  cutting them all at 4h would have realised: "
+              f"mean {cut.mean():+.2f}%  total {cut.sum():+.2f}pp")
+        print(f"  holding them actually realised:          "
+              f"mean {d.mean():+.2f}%  total {d.sum():+.2f}pp")
+        print(f"  => early cut {'HELPS' if cut.sum() > d.sum() else 'HURTS'} "
+              f"by {abs(cut.sum()-d.sum()):.2f}pp on this cohort")
+    print("\nCAVEAT: n is small, the window is ~2.5 weeks and the entries cluster "
+          "on 9 dates, so these percentages are not stable estimates. Read them "
+          "as directions, not magnitudes.")
+
+
+def open_book(entries: list[Entry], cfg, now: datetime) -> None:
+    """How long the live positions have been held and where they stand."""
+    print("\n" + "=" * 104)
+    print(f"OPEN BOOK at {now.isoformat()[:19]}")
+    print("=" * 104)
+    print(f"{'pair':<17}{'held_h':>8}{'to_horizon_h':>13}{'entry_spread':>14}"
+          f"{'current':>11}{'r_now':>9}{'worst':>9}{'stop':>10}{'flips':>7}")
+    for e in entries:
+        if e.status != "open":
+            continue
+        r = return_path(e)
+        held = r[e.t0_idx:]
+        hrs = (now - e.entry_time).total_seconds() / 3600
+        to_h = (e.time_stop - now).total_seconds() / 3600
+        cur = float(e.spread_path[-1])
+        print(f"{e.pair:<17}{hrs:>8.1f}{to_h:>13.1f}{e.entry_spread:>+14.5f}"
+              f"{cur:>+11.5f}{held[-1]*100:>+8.2f}%{held.min()*100:>+8.2f}%"
+              f"{e.stop_spread:>+10.5f}{int((held > 0).sum()):>7}")
+    print("\nflips = hours at which the position was trading positive while held.")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--sweep", action="store_true")
     ap.add_argument("--fit", action="store_true",
                     help="ledger fit: replay vs the trades that actually closed")
+    ap.add_argument("--bounce", action="store_true",
+                    help="does a position that opens red ever come back?")
     ap.add_argument("--list", action="store_true")
     args = ap.parse_args()
 
@@ -630,6 +768,11 @@ def main() -> None:
           f"(needs beta_sd_entry > 0)\n")
 
     attach_paths(entries, signals)
+
+    if args.bounce:
+        open_book(entries, cfg, datetime.now(timezone.utc))
+        bounce_study(entries, cfg, datetime.now(timezone.utc))
+        return
 
     print("\n" + "=" * 80)
     print("VALIDATION: does the replay reproduce the bot's recorded exit reason?")
