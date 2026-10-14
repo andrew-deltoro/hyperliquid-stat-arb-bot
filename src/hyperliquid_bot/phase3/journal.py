@@ -168,12 +168,24 @@ def _leg_pnls(pos: dict, exit_price_a: float, exit_price_b: float) -> tuple[floa
     return float(pnl_a), float(pnl_b), float(leg_a), float(leg_b)
 
 
+# Fallback cost assumptions. Used ONLY when the close path does not supply the
+# configured values (see config["fees"]) and no measured fill fees exist. They
+# preserve the historical behaviour, but the live close path overrides both from
+# config, so editing config/fees now actually takes effect.
+#
+# NOTE: prefer_maker is not modelled here. The fallback charges the taker rate on
+# both sides, which is the conservative direction; measured fees, when
+# available, supersede it entirely.
+DEFAULT_FEE_PCT = 0.00045
+DEFAULT_SLIPPAGE_BPS = 3.0
+
+
 def compute_pnl(
     pos: dict,
     exit_price_a: float,
     exit_price_b: float,
-    fee_pct: float = 0.00045,
-    slippage_bps: float = 3.0,
+    fee_pct: float | None = None,
+    slippage_bps: float | None = None,
     funding_usd: float = 0.0,
     fees_usd: Optional[float] = None,
 ) -> tuple[float, float]:
@@ -198,6 +210,13 @@ def compute_pnl(
     """
     pnl_a, pnl_b, leg_a, leg_b = _leg_pnls(pos, exit_price_a, exit_price_b)
     gross_pnl = pnl_a + pnl_b
+
+    # Resolve the cost model. Explicit args win; otherwise fall back to the
+    # historical constants so callers that pass nothing behave as before.
+    if fee_pct is None:
+        fee_pct = DEFAULT_FEE_PCT
+    if slippage_bps is None:
+        slippage_bps = DEFAULT_SLIPPAGE_BPS
 
     # Round-trip cost model:
     #   fee:      measured (fees_usd) or notional × fee_pct × 2 sides

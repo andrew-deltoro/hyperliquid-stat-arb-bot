@@ -95,18 +95,19 @@ position:
   compounding_enabled: true
   scale_safeguards: false
   dry_run_balance: 3100.0
+  # target_frac is REQUIRED: positions.py reads it with bracket access at entry
+  # to bake target_spread. With exit_mode: cross that level is never evaluated,
+  # but the value must exist for the entry path to run.
   target_frac: 0.75
-  use_trailing_stop: true
+  # exit_mode is the one switch that selects the exit rule. "cross" makes
+  # use_trailing_stop / trail_frac / trail_activation_frac unreachable, so those
+  # keys are deliberately absent. Re-add them only together with exit_mode.
   exit_mode: cross
   cross_exit_frac: 0.75
-  trail_frac: 0.25
-  trail_activation_frac: 0.5
+  # NB: cross_exit_frac is inert at the 4h cadence -- 0.50/0.75/1.00/1.50 are
+  # bit-identical (see scripts/experiments/tape_exit_replay.py --sweep).
   exit_horizon_mult: 3.33
   stop_mult: 3.0
-  # Retained for backward compatibility; no longer read by the exit logic.
-  # The beta-drift exit now uses a posterior-σ trigger plus a spread-level
-  # PnL gate (see positions._spread_pnl_should_exit).
-  beta_shift_max: 0.2
   # Beta-drift trigger: |Δβ| / posterior sd(β). Only a trigger; the exit also
   # requires a non-positive posterior predictive net PnL on the spread.
   beta_shift_min_posterior_sd: 2.0
@@ -191,8 +192,12 @@ safeguards:
   # Opening orders only; reduce-only closes don't count.
   max_daily_orders: 10
 fees:
-  taker_fee_pct: 0.00045
-  maker_fee_pct: 0.00015
+  # default_fee_pct and slippage_bps are the ONLY fee keys the code reads
+  # (journal.compute_pnl and leverage.exit_policy_from_cfg). taker_fee_pct and
+  # maker_fee_pct were removed: no source file read them, so editing them had no
+  # effect on any computed PnL. Measured fill fees from the exchange, when
+  # available, supersede default_fee_pct entirely; the slippage allowance is
+  # kept either way, so the net figure stays conservative.
   default_fee_pct: 0.00045
   slippage_bps: 3
 ou_prior:

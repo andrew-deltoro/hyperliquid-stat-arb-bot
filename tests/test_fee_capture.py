@@ -128,6 +128,48 @@ def test_log_trade_records_fee_columns(tmp_path, monkeypatch):
     assert r["modeled_cost_usd"] and r["realized_fee_pct"]
 
 
+def test_compute_pnl_defaults_are_the_module_constants():
+    """A no-arg call must reproduce the historical constants exactly.
+
+    The close path now passes the configured fee and slippage. If the defaults
+    ever drift away from DEFAULT_FEE_PCT / DEFAULT_SLIPPAGE_BPS, every caller
+    that omits them silently changes cost, so pin them here.
+    """
+    a, b = 0.002274, 297.23
+    _, _, leg_a, leg_b = journal._leg_pnls(POS, a, b)
+    ntl = leg_a + leg_b
+    implicit, _ = journal.compute_pnl(POS, a, b)
+    explicit, _ = journal.compute_pnl(
+        POS, a, b,
+        fee_pct=journal.DEFAULT_FEE_PCT,
+        slippage_bps=journal.DEFAULT_SLIPPAGE_BPS,
+    )
+    assert abs(implicit - explicit) < 1e-12
+    legacy, _ = journal.compute_pnl(POS, a, b, fee_pct=0.00045,
+                                    slippage_bps=3.0)
+    assert abs(implicit - legacy) < 1e-12
+    # and the two constants are actually the ones the costs are built from
+    zero_cost, _ = journal.compute_pnl(POS, a, b, fee_pct=0.0, slippage_bps=0.0)
+    assert abs((zero_cost - legacy) -
+               (ntl * 0.00045 * 2 + ntl * 3.0 / 1e4 * 2)) < 1e-9
+
+
+def test_compute_pnl_honours_configured_cost_model():
+    """A configured fee/slippage must move the result; a lower fee must help."""
+    a, b = 0.002274, 297.23
+    _, _, leg_a, leg_b = journal._leg_pnls(POS, a, b)
+    ntl = leg_a + leg_b
+    cheap, _ = journal.compute_pnl(POS, a, b, fee_pct=0.00015, slippage_bps=1.0)
+    dear, _ = journal.compute_pnl(POS, a, b, fee_pct=0.00045, slippage_bps=3.0)
+    assert cheap > dear
+    expected_gap = ntl * (0.00045 - 0.00015) * 2 + ntl * (3.0 - 1.0) / 1e4 * 2
+    assert abs((cheap - dear) - expected_gap) < 1e-9
+    # measured fees still win over the configured fee_pct, but slippage applies
+    measured, _ = journal.compute_pnl(POS, a, b, fee_pct=0.00015,
+                                      slippage_bps=1.0, fees_usd=0.0)
+    assert abs((measured - cheap) - ntl * 0.00015 * 2) < 1e-9
+
+
 def test_log_fees_writes_per_leg_rows(tmp_path):
     f = tmp_path / "fees.csv"
     fills = [

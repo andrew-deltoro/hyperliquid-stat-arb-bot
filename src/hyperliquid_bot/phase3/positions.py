@@ -833,13 +833,22 @@ class PositionManager:
                     self.log_fn(
                         f"[FEES] {pos['pair']}: ${fees['total']:.4f} "
                         f"(maker={fees['maker_fills']} taker={fees['taker_fills']}) "
-                        f"vs modeled ${(pos['leg_a_usd'] + pos['leg_b_usd']) * 0.00045 * 2:.4f}"
+                        f"vs modeled "
+                        f"${(pos['leg_a_usd'] + pos['leg_b_usd']) * float(self.cfg.raw.get('fees', {}).get('default_fee_pct', journal.DEFAULT_FEE_PCT)) * 2:.4f}"
                     )
             except Exception as e:  # noqa: BLE001
                 self.log_fn(f"[FEES] {pos['pair']}: capture failed: {e}")
+            # Cost model for the PnL fallback, taken from config so that editing
+            # config/fees takes effect. Measured fees (above) override the fee
+            # term; the slippage allowance still applies either way.
+            cfg_fees = self.cfg.raw.get("fees", {}) or {}
+            fee_pct = float(cfg_fees.get("default_fee_pct", journal.DEFAULT_FEE_PCT))
+            slip_bps = float(cfg_fees.get("slippage_bps",
+                                          journal.DEFAULT_SLIPPAGE_BPS))
             pnl_usd, pnl_pct = journal.compute_pnl(
                 pos, exit_price_a, exit_price_b, funding_usd=funding_usd,
                 fees_usd=pos.get("fees_usd"),
+                fee_pct=fee_pct, slippage_bps=slip_bps,
             )
             pos["pnl_usd"] = pnl_usd
             pos["pnl_pct"] = pnl_pct
