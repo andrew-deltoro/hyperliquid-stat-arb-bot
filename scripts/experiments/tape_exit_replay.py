@@ -281,7 +281,7 @@ def _grid_key(ms: int) -> int:
 
 
 def attach_paths(entries: list[Entry], signals: list[dict],
-                 verbose: bool = True) -> None:
+                 verbose: bool = False) -> None:
     by_pair: dict[str, list[dict]] = {}
     for row in signals:
         by_pair.setdefault(row["pair"], []).append(row)
@@ -488,6 +488,8 @@ class Variant:
     time_stop_mult: float | None = None    # overrides baked time_stop_iso
     stop_mult: float | None = None         # overrides baked stop_spread
     disable_beta_shift: bool = False
+    disable_stop: bool = False             # divergence stop unreachable
+    disable_time_stop: bool = False        # hold to end of path
 
 
 def replay(entry: Entry, cfg, variant: Variant) -> dict:
@@ -510,6 +512,13 @@ def replay(entry: Entry, cfg, variant: Variant) -> dict:
         pos["stop_spread"] = variant.stop_mult * entry.entry_spread
     if variant.disable_beta_shift:
         pos["beta_sd_entry"] = 0.0     # gate -> no sd -> no trigger
+    if variant.disable_stop:
+        # push the stop out of reach: long_a stops on the low side, short_a on
+        # the high side, so the unreachable value depends on direction.
+        pos["stop_spread"] = -1e9 if entry.sign > 0 else 1e9
+    if variant.disable_time_stop:
+        pos["time_stop_iso"] = (entry.entry_time
+                                + timedelta(hours=1e6)).isoformat()
 
     use_cfg = _cfg_with(cfg, variant.cfg_patch)
     pm = _pm_for(use_cfg, pos)
@@ -828,7 +837,7 @@ def main() -> None:
     print(f"  beta_shift gate armed on {armed}/{len(entries)} "
           f"(needs beta_sd_entry > 0)\n")
 
-    attach_paths(entries, signals)
+    attach_paths(entries, signals, verbose=True)
 
     if args.bounce:
         open_book(entries, cfg, datetime.now(timezone.utc))
