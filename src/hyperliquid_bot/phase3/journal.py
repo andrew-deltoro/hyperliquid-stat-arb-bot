@@ -10,6 +10,7 @@ Both are created with headers on first write. Appended atomically.
 from __future__ import annotations
 
 import csv
+import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,6 +47,8 @@ TRADES_COLUMNS = [
     # any slippage the realized-price PnL failed to capture.
     "fees_usd", "maker_fills", "taker_fills",
     "realized_fee_pct", "modeled_cost_usd", "pending_reason",
+    # Why the rule fired (rule + evidence), not just which rule it was.
+    "exit_detail",
 ]
 
 # Columns appended in later revisions; journal strips legacy duplicates.
@@ -292,5 +295,10 @@ def log_trade(pos: dict, exit_price_a: float, exit_price_b: float,
         ),
         "modeled_cost_usd": f"{(leg_ntl_a + leg_ntl_b) * 0.00045 * 2:.6f}",
         "pending_reason": "",
+        # Why the exit rule fired, as opposed to which rule it was. For
+        # beta_shift this carries the drift-in-sigma, the economics gate source
+        # and whether the time stop was simultaneously due, so a shared cycle
+        # can no longer be silently attributed to the horizon.
+        "exit_detail": json.dumps(pos.get("exit_detail", {}), separators=(",", ":")),
     }
     _append_row(TRADES_FILE, TRADES_COLUMNS, row)

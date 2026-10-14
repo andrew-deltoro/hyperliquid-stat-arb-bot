@@ -574,7 +574,9 @@ class PositionManager:
             )
 
         # Helper closure: always passes fresh prices to _close
-        def close(reason: str):
+        def close(reason: str, detail: dict | None = None):
+            if detail:
+                pos["exit_detail"] = detail
             return self._close(
                 pos, current_centered, fresh_beta, reason,
                 exit_price_a=price_a_now,
@@ -596,6 +598,11 @@ class PositionManager:
             # Cross exit: wait for spread to reverse past zero and reach
             # +/- cross_frac * |entry_spread| on the OPPOSITE side.
             # Validated via walk-forward: +45% mean PnL over trail (n=189).
+            # NB: cross_frac is inert at a 4h cadence. Once the centre is past
+            # the entry level, that >= transition is already satisfied at the
+            # earliest sample bar on the opposite side, so it fires there for
+            # any frac -- 0.50/0.75/1.00 were bit-identical (identical exit bar
+            # for every episode) in scripts/experiments/tape_exit_replay.py.
             cross_frac = float(self.cfg.position.get("cross_exit_frac", 0.75))
             entry_spread = pos["entry_spread"]
             cross_exit_level = -cross_frac * entry_spread  # opposite-side target
@@ -658,11 +665,7 @@ class PositionManager:
             if current_centered >= stop_spread:
                 return close("divergence_stop")
 
-        # --- 3. TIME STOP ---
-        if datetime.now(timezone.utc) >= _parse_iso(pos["time_stop_iso"]):
-            return close("time_stop")
-
-        # --- 4. BETA DRIFT STOP (posterior, spread-level PnL gate) ---
+        # --- 3. BETA DRIFT STOP (posterior, spread-level PnL gate) ---
         # Finding 3.2: the old gate used the *relative* point-estimate drift
         # (|Δβ|/|β| > 20%) as a hard exit. Relative drift is not
         # uncertainty-aware, so a 12% move on a spuriously precise beta
@@ -675,6 +678,15 @@ class PositionManager:
         #
         # Finding 3.1: if a position has no stored beta sd (pre-correction
         # entry), the relative rule is disabled entirely (no sd -> no gate).
+        #
+        # Ordering: this is evaluated BEFORE the time stop. Both are exits, so
+        # the outcome (a close) is unchanged either way -- only the recorded
+        # reason differs. Evaluating the gate first makes that attribution
+        # deterministic and evidence-bearing when a cycle satisfies both, which
+        # is reachable for fast pairs (horizon = 3.33x half-life against a 4h
+        # cadence). It has NOT yet occurred in the live book (0 of 16 recorded
+        # beta_shift exits had the horizon due when they closed), so this is a
+        # latent-determinism change, not a fix for observed mislabelling.
         if fresh_beta is not None:
             beta_entry = pos["beta_entry"]
             beta_sd = max(pos.get("beta_sd_entry", 0.0), fresh_beta_sd or 0.0)
@@ -687,11 +699,24 @@ class PositionManager:
                 # Route through the shared economics gate. Required (not held)
                 # so unbackfilled positions are made safe on their next beta
                 # drift instead of being force-closed.
-                should_exit, _detail = self._spread_pnl_should_exit(
+                should_exit, detail = self._spread_pnl_should_exit(
                     pos, current_centered, fresh_exp_return, require_signal=False
                 )
                 if should_exit:
-                    return close("beta_shift")
+                    return close("beta_shift", {
+                        "beta_entry": round(float(beta_entry), 6),
+                        "beta_now": round(float(fresh_beta), 6),
+                        "beta_sd": round(float(beta_sd), 6),
+                        "posterior_drift_sd": round(float(posterior_drift), 3),
+                        "gate": detail,
+                        "time_stop_due": bool(
+                            datetime.now(timezone.utc) >= _parse_iso(pos["time_stop_iso"])
+                        ),
+                    })
+
+        # --- 4. TIME STOP ---
+        if datetime.now(timezone.utc) >= _parse_iso(pos["time_stop_iso"]):
+            return close("time_stop")
 
         # Still open
         z_now = current_centered / (pos["entry_sigma_raw"] + 1e-9)

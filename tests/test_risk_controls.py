@@ -190,3 +190,55 @@ def test_dry_run_kelly_sizing_respects_safeguard_cap(tmp_path):
     notional, why = _size_for_book(sig, pm, ex, ex.account_equity(), 0.0, 1.0, cfg)
     assert notional == pytest.approx(0.98 * 200.0)
     assert "safeguard_per_order" in why
+
+
+def test_beta_shift_outranks_time_stop_on_a_shared_cycle(tmp_path):
+    """Reordered 2026-10-14.
+
+    Both are exits, so the outcome is a close either way -- only the RECORDED
+    reason differs. Evaluating the gate first makes that attribution
+    deterministic and evidence-bearing when one cycle satisfies both, which is
+    reachable for fast pairs (horizon 3.33x half-life against a 4h cadence).
+    It had not yet occurred in the live book: 0 of 16 recorded beta_shift exits
+    had the horizon due when they closed. This guards the determinism.
+    """
+    hl = FakeHL({"AAA": 10.0, "BBB": 20.0})
+    hl.positions = {"AAA": 10.0, "BBB": -5.0}
+    pm, _ = make_pm(hl, tmp_path)
+    open_position(pm, size_a=10.0, size_b=-5.0, beta_sd_entry=0.01,
+                  entry_alpha=0.0, entry_mean_raw=0.0)
+    import math
+    pa, pb = 10.0, 20.0
+    pos = pm.state.positions[0]
+    pos["entry_mean_raw"] = math.log(pa) - math.log(pb)
+    pos["entry_spread"] = -0.02
+    # Horizon already expired: the time stop is due at the same evaluation.
+    pos["time_stop_iso"] = "2020-01-01T00:00:00+00:00"
+
+    res = pm.evaluate_open("AAA/BBB", pa, pb, fresh_beta=1.25,
+                           fresh_beta_sd=0.05, fresh_exp_return=-0.01)
+    assert res["action"] == "closed"
+    assert res["reason"] == "beta_shift"
+
+    # The evidence is persisted so the shared cycle stays auditable.
+    detail = pos["exit_detail"]
+    assert detail["posterior_drift_sd"] >= 2.0
+    assert detail["time_stop_due"] is True
+
+
+def test_time_stop_still_fires_when_the_gate_is_silent(tmp_path):
+    hl = FakeHL({"AAA": 10.0, "BBB": 20.0})
+    hl.positions = {"AAA": 10.0, "BBB": -5.0}
+    pm, _ = make_pm(hl, tmp_path)
+    open_position(pm, size_a=10.0, size_b=-5.0, beta_sd_entry=0.01,
+                  entry_alpha=0.0, entry_mean_raw=0.0)
+    import math
+    pa, pb = 10.0, 20.0
+    pos = pm.state.positions[0]
+    pos["entry_mean_raw"] = math.log(pa) - math.log(pb)
+    pos["entry_spread"] = -0.02
+    pos["time_stop_iso"] = "2020-01-01T00:00:00+00:00"
+
+    # No fresh beta -> no trigger, so the horizon must still close the trade.
+    res = pm.evaluate_open("AAA/BBB", pa, pb, fresh_beta=None)
+    assert res["action"] == "closed" and res["reason"] == "time_stop"
