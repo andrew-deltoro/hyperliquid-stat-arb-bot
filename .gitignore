@@ -48,3 +48,20 @@ hlbot-status.sh
 !reports/.gitkeep
 reports/.trend_cache/
 reports/.funding_decile_cache/
+reports/.q5_cache/
+reports/.binance_cache/
+reports/.macd_cache/
+reports/.orderflow_cache/
+reports/.entry_ds_cache/
+reports/.entry_quality_cache/
+reports/.ifvg_cache/
+reports/.overshoot_cache/
+
+# Webull OpenAPI credentials - never commit an App Secret
+webull_credentials*.json
+**/webull/credentials.json
+
+# Webull SDK runtime log
+webull_data_sdk.log
+webull_sdk*.log
+reports/.webull_cache/

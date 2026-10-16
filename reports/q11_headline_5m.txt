@@ -1,0 +1,155 @@
+====================================================================================
+Q11  Oliver Velez 'whale' -- failed bounce after a power bar down
+====================================================================================
+locked : power drop >= 1.5xATR(14) over <= 3 red bars, close in the bottom 25% of the run range; run range >= 1.0x the prior-day median red range
+         bounce within 6 bars; entry 'conservative'; stop = high of the move + 0.5xATR (capped at 3.0xATR); target = next 1.0xATR grid level below; time stop 96 bars
+         zone: Zone1 = close <= SMA20, Zone2/3 = above (Zone3 = above + 1.0xATR, context only)
+cost   : 15 bp round trip on notional (matrix taker row); pessimistic intrabar
+
+------------------------------------------------------------------------------------
+DATA [5m primary]  pairs used=30  total bars=19,393,098
+span  2017-08-17 -> 2026-10-14
+
+FUNNEL
+  raw power-run candidates (vectorised, before filters): 1,459,161
+    dropped by the 'enough red' size rule              : 60,863
+  qualifying power-drop events (enough red)           : 915,990
+    ...no green bounce within the window               : 17,154
+    ...bounce never triggered the entry stop           : 300,527
+    ...dropped by the max-stop cap / grid target       : 439,366
+  bounce + conservative entry available            : 158,943
+  control (naive continuation) entry available         : 555,861   (of which dropped by the cap: 360,129)
+  SCORED ON BOTH ARMS -- the frozen population           : 158,558
+
+====================================================================================
+CLAIM A -- the bounce fails: bounce entry minus control, on the SAME events; first 70% through 2024-01-14
+====================================================================================
+  scatter 70%: paired events=84699  clustered days=2340
+                     n   gross R     net R   net t   med net     win  med R(bp)   net bp
+    BOUNCE       84699    -0.015    -0.221  -65.61    -0.046   40.5%       92.1   -16.61
+    CONTROL      84699    +0.093    -0.136  -39.87    -0.029   44.0%       83.4    -6.45
+    differential (bounce - control):
+      gross R    :   -0.109   day-clustered t = -78.55
+      net R      :   -0.085   day-clustered t = -59.22
+      hit rate   :     -3.5pt  day-clustered t = -18.37
+      fixed-horizon bp:   -10.16  day-clustered t = -26.34   (geometry-free)
+      stop dist  :    +10.7bp  day-clustered t = +74.15
+      DIAGNOSTIC (labelled, not a kill rule):
+        entry bar minus run end : bounce +3.3 bars   control +0.0 bars
+        stop dist bp            : bounce 92.1   control 83.4   (median target/risk R:R: 0.19 vs 0.21)
+        bp to a COMMON terminal bar (both arms, same forward move):
+          bounce -16.39bp  control -6.45bp  gap -9.94 (t -74.07)
+      per-event net-R differential deciles (p10/25/50/75/90): -0.24 / -0.10 / -0.03 / +0.00 / +0.25    sd 0.36
+  KILL RULE (Claim A), prong 1: day-clustered t >= +2 AND net-R gap > 0
+  prong-1 verdict: FAILS -> Claim A holdout stays SEALED   (84699 paired events, rule-3 floor 120)
+
+====================================================================================
+CLAIM B -- the zone rule: Zone 2/3 minus Zone 1, on the SAME bounce events; first 70% through 2024-01-14
+====================================================================================
+  scatter 70%: events=84699  Zone2/3=56330 / Zone1=28369  clustered days=2340
+    zone2/3 net R mean=-0.214 med=-0.045 win=40.5%   zone1 net R mean=-0.234 med=-0.046 win=40.4%
+    differential (zone2/3 - zone1) [his rule needs a POSITIVE gap]:
+      net R      :   +0.020   day-clustered t = +4.70
+      gross R    :   +0.025   day-clustered t = +6.55
+      hit rate   :     +0.1pt  day-clustered t = +0.22
+      fixed-horizon bp:    +6.12  day-clustered t = +3.17   (geometry-free)
+      zone2/3 bp mean=-14.56  zone1 bp mean=-20.68
+  KILL RULE (Claim B), prong 1: his rule needs a POSITIVE gap, so day-clustered t >= +2 AND net-R gap > 0
+  prong-1 verdict: CLEARS -> holdout may be opened ONCE
+
+====================================================================================
+GEOMETRY-FREE -- the bounce-recovery distribution (his direct claim)
+====================================================================================
+  scatter 70%: n=84699   (fractions are of the DROP; >=100% = fully undone)
+    back to the run's own high only (24 bars)      median 0.975  p10/25/50/75/90 = 0.45/0.65/0.98/1.55/2.45
+                                                   retraces >= 50%:  86.9%   retraces >= 100%:  49.0%
+    drop = run low..run high (96 bars)             median 1.939  p10/25/50/75/90 = 0.60/1.00/1.94/3.54/5.90
+                                                   retraces >= 50%:  93.9%   retraces >= 100%:  75.1%
+    drop = run low..prior 96-bar high (strictest)  median 0.718  p10/25/50/75/90 = 0.20/0.36/0.72/1.48/2.75
+                                                   retraces >= 50%:  64.2%   retraces >= 100%:  37.5%
+    secondary move to a NEW LOW at some point after the drop: 98.4%   (his literal claim)
+
+====================================================================================
+SELECTION DIAGNOSTIC -- is Claim A an entry-timing edge or a conditioning
+artifact? (not a kill rule; reported because it decides the reading)
+====================================================================================
+  scatter 70%: paired=84699  new low BEFORE the bounce bar=14767 (17.4%)  new low only at/after the bounce=69932
+    new low arrived BEFORE the bounce: n=14767
+      bounce net R mean=-0.218 win=39.9%  |  control net R mean=-0.082 win=46.2%
+      bounce-minus-control: net R -0.136 (t -37.03), bp -17.91 (t -21.60)
+    new low only at/after the bounce: n=69932
+      bounce net R mean=-0.222 win=40.6%  |  control net R mean=-0.148 win=43.5%
+      bounce-minus-control: net R -0.074 (t -49.94), bp -8.52 (t -21.84)
+    Reading: a non-trivial 'BEFORE' share means the population is partly
+    selected on continuation that had ALREADY happened before the entry
+    existed -- so part of the Claim-A gap is not the entry's doing.
+
+====================================================================================
+OPTIONAL / LABELLED -- round-number proximity (OUR grid, not his)
+====================================================================================
+  scatter 70%
+    1.0xATR grid (the locked 'round' grid): near n=25533 far n=59166; new-low rate near 98.3% vs far 98.4%
+      bounce-arm net R: near-minus-far gap +0.014R day-clustered t = +3.61   (free statistic, no kill rule)
+      recovery fraction: near 1.296 vs far 1.292, gap +0.003 (t +0.38)
+    0.1xATR grid (the finer, 'less round' grid): insufficient split
+
+====================================================================================
+UNCONDITIONAL CONTINUATION -- the drop's own forward move, no entry at
+all (the honest denominator for reading Claim A)
+====================================================================================
+  scatter 70%: n=84,699  clustered days=2340
+    unconditional short from the run-end close, 24 bars: mean -8.72bp  median -13.33bp  win 43.5%  day-clustered t = -7.31
+    Reading: a materially positive, significant number here means the
+    power drop alone predicts continuation, so Claim A is not about the
+    bounce entry -- the bounce arm is merely a worse-timed way to be short
+    the same already-continuing move.
+
+====================================================================================
+WALK-FORWARD -- opened PER CLAIM, only if that claim's 70% cleared
+  The kill rule has TWO prongs: (1) the first 70% must clear its gate,
+  AND (2) the last 30% must not show the OPPOSITE sign. Opening the
+  holdout is a single look that decides prong 2; it never rescues prong 1.
+====================================================================================
+
+  Claim A: NOT OPENED. The first 70% failed prong 1, so
+  the last 30% of calendar time stays SEALED (matrix rule 5).
+  No holdout statistic is computed or printed.
+
+  Claim B: prong 1 cleared -> last 30% opened ONCE (prong 2)
+  Claim B holdout 30%: events=73859  Zone2/3=46882 / Zone1=26977  clustered days=1004
+    zone2/3 net R mean=-0.234 med=-0.063 win=37.0%   zone1 net R mean=-0.231 med=-0.056 win=38.3%
+    differential (zone2/3 - zone1) [his rule needs a POSITIVE gap]:
+      net R      :   -0.003   day-clustered t = -0.54
+      gross R    :   +0.005   day-clustered t = +1.19
+      hit rate   :     -1.3pt  day-clustered t = -2.96
+      fixed-horizon bp:    +3.06  day-clustered t = +1.29   (geometry-free)
+      zone2/3 bp mean=-14.37  zone1 bp mean=-17.43
+    prong 2: the scatter sign was positive (+0.020); the holdout is -0.003
+    verdict: FAILS -> holdout shows the OPPOSITE sign. The
+    apparent 70% result does NOT carry into the last 30%.
+
+====================================================================================
+FINAL -- does either claim reproduce a profitable edge?
+====================================================================================
+  Claim A (the bounce fails; short the failed bounce beats the control)
+    -> FAILED (prong 1, scatter)
+  Claim B (the zone rule; Zone 2/3 beats Zone 1)
+    -> FAILED (prong 2, opposite sign in holdout)
+
+  Both claims FAIL. The bounce entry is WORSE than the naive continuation
+  short on every measure, and the zone gap, though nominally positive on
+  the first 70%, does not survive into the holdout and does not describe a
+  tradable edge (both zone arms lose money net of cost).
+  A negative result is the finding; nothing here is a live order or a
+  sizing change.
+
+====================================================================================
+CONTEXT -- per-arm detail on the whole span (5m)
+====================================================================================
+  BOUNCE   netR mean=-0.226 med=-0.053 win=39.1%  exits {'stop': 26160, 'target': 132341, 'time': 57}
+  CONTROL  netR mean=-0.144 med=-0.037 win=42.4%  exits {'stop': 14320, 'target': 144212, 'time': 26}
+  zone split (events with a bounce entry): zone1=55,494 zone2/3=103,449  (of which zone3=60,493)
+
+Nothing here is a live order, a sizing change, or a claim the source
+makes money. The two differentials test the bounce mechanism and the
+zone rule on one frozen crypto universe over one frozen span.
