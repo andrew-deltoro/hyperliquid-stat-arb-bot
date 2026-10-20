@@ -178,6 +178,57 @@ def test_journal_migrates_header_when_columns_change(isolated_files):
     assert next(csv.DictReader(path.open()))["pnl_pct"] == "0.01"
 
 
+def test_journal_never_drops_columns_on_narrower_writer(isolated_files):
+    """A stale writer sharing the runtime dir must not erase newer columns.
+
+    Live regression: a frozen tree declaring 23 signal columns rewrote the
+    header over the repo tree's 27, wiping the newest columns for 475 rows every
+    day at 14:00. Writing with a narrower header must be a no-op on the file
+    header.
+    """
+    path = journal.SIGNALS_FILE
+    journal._ensure_file(path, journal.SIGNALS_COLUMNS)
+    wide = path.read_text().splitlines()[0].split(",")
+    newest = wide[-1]
+
+    row = {c: "" for c in journal.SIGNALS_COLUMNS}
+    row["pair"] = "AAA/BBB"
+    row[newest] = "1.25"
+    journal._append_row(path, journal.SIGNALS_COLUMNS, row)
+
+    narrow = [c for c in journal.SIGNALS_COLUMNS if c != newest]
+    journal._append_row(path, narrow, {"pair": "CCC/DDD"})
+
+    assert path.read_text().splitlines()[0].split(",") == wide
+    rows = list(csv.DictReader(path.open()))
+    assert rows[0][newest] == "1.25"               # preserved, not erased
+    assert rows[1]["pair"] == "CCC/DDD"            # new row still lands
+    assert rows[1][newest] == ""                   # unknown to narrow writer
+
+
+def test_narrow_writer_appends_in_correct_field_positions(isolated_files):
+    """A row appended by a narrower writer must not shift fields left."""
+    path = journal.SIGNALS_FILE
+    journal._ensure_file(path, journal.SIGNALS_COLUMNS)
+    narrow = ["pair", "action"]
+    journal._append_row(path, narrow, {"pair": "AAA/BBB", "action": "OPEN"})
+    rows = list(csv.DictReader(path.open()))
+    assert rows[-1]["pair"] == "AAA/BBB"
+    assert rows[-1]["action"] == "OPEN"
+    assert rows[-1][journal.SIGNALS_COLUMNS[-1]] == ""
+
+
+def test_ensure_file_preserves_unknown_existing_columns(isolated_files):
+    """Columns already on disk but unknown to this writer survive a migration."""
+    path = journal.TRADES_FILE
+    path.write_text("pair,future_col\nAAA/BBB,keepme\n")
+    journal._ensure_file(path, ["pair", "direction"])
+    assert csv.DictReader(path.open()).fieldnames == (
+        ["pair", "future_col", "direction"]
+    )
+    assert next(csv.DictReader(path.open()))["future_col"] == "keepme"
+
+
 def test_dry_run_kelly_sizing_respects_safeguard_cap(tmp_path):
     cfg = make_cfg()
     cfg.raw["executor"]["mode"] = "dry_run"

@@ -73,6 +73,26 @@ SIGNALS_COLUMNS = [
 ]
 
 
+def _merged_columns(path: Path, columns: list[str]) -> list[str]:
+    """Return the on-disk header extended with any columns it is missing.
+
+    The journal is append-only *across code versions*. More than one writer can
+    target the same runtime dir (e.g. a pinned tree and the repo tree sharing
+    HLBOT_RUNTIME_DIR), and older trees declare a narrower column set. A writer
+    must therefore never drop a column it does not know about: replacing the
+    header on every mismatch silently erased newer columns each time a stale
+    tree logged a row.
+
+    Existing order is preserved so the common case stays a no-op; genuinely new
+    columns are appended on the right.
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return list(columns)
+    with open(path, newline="") as f:
+        header = next(csv.reader(f), [])
+    return header + [c for c in columns if c not in header]
+
+
 def _ensure_file(path: Path, columns: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists() or path.stat().st_size == 0:
@@ -80,16 +100,19 @@ def _ensure_file(path: Path, columns: list[str]) -> None:
             writer = csv.writer(f)
             writer.writerow(columns)
         return
+    merged = _merged_columns(path, columns)
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
         header = reader.fieldnames or []
-        if header == columns:
+        if header == merged:
             return
         rows = list(reader)
-    # Column set changed: rewrite with the new header, keeping old rows.
+    # Only ever adds columns; unknown existing columns are preserved.
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
+        writer = csv.DictWriter(
+            f, fieldnames=merged, extrasaction="ignore", restval=""
+        )
         writer.writeheader()
         writer.writerows(rows)
     tmp.replace(path)
@@ -97,8 +120,13 @@ def _ensure_file(path: Path, columns: list[str]) -> None:
 
 def _append_row(path: Path, columns: list[str], row: dict) -> None:
     _ensure_file(path, columns)
+    # Write against the *merged* header, not the caller's narrower one, so a
+    # writer from an older tree cannot shift every field to the left.
+    fieldnames = _merged_columns(path, columns)
     with open(path, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
+        writer = csv.DictWriter(
+            f, fieldnames=fieldnames, extrasaction="ignore", restval=""
+        )
         writer.writerow(row)
     # Flush to disk immediately
     with open(path, "r+") as f:
