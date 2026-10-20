@@ -1,0 +1,16 @@
+[Unit]
+Description=Hyperliquid microstructure + Kalshi recorder (user-managed supervisor)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/hlbot/hyperliquid-stat-arb-bot
+Environment="PYTHONPATH=/home/hlbot/hyperliquid-stat-arb-bot"
+Environment="HLBOT_RUNTIME_DIR=/home/hlbot/hlbot-runtime/live"
+ExecStart=/home/hlbot/hyperliquid-stat-arb-bot/.venv/bin/python scripts/hl_microstructure_recorder.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
