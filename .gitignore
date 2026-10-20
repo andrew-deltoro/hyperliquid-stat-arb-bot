@@ -23,6 +23,8 @@ logs/
 reports/*.csv
 reports/*.log
 reports/*.png
+reports/figs/
+reports/*.err
 reports/*.json
 reports/.dir_cache/
 reports/.dir_cache*/
