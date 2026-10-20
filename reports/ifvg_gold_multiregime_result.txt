@@ -1,0 +1,57 @@
+====================================================================================================
+MULTI-REGIME IFVG: OKX PAXG-USDT 15m (gold-backed token)
+====================================================================================================
+  bars=24000  2026-02-05 21:15:00+00:00 -> 2026-10-13 21:00:00+00:00  (250 days)
+  price range: 3944 .. 5590
+  Asian sessions: 250
+
+----------------------------------------------------------------------------------------------------
+FEE MODEL: zero (0.000% round trip on notional)
+----------------------------------------------------------------------------------------------------
+  source rule: 1-tick stop       n=248 gross=-0.032R  net=-0.032R  W/L/BE=120/128/0  win=  48%  totNet=  -8.00R  ambig=12
+  wider: stop 1.0x avg range     n=248 gross=+0.040R  net=+0.040R  W/L/BE=129/119/0  win=  52%  totNet= +10.00R  ambig=7
+  wider: stop 2.0x avg range     n=248 gross=+0.016R  net=+0.016R  W/L/BE=126/122/0  win=  51%  totNet=  +4.00R  ambig=1
+  wider: stop 3.0x avg range     n=248 gross=+0.032R  net=+0.032R  W/L/BE=128/120/0  win=  52%  totNet=  +8.00R
+  wider: stop 4.0x avg range     n=248 gross=-0.008R  net=-0.008R  W/L/BE=123/125/0  win=  50%  totNet=  -2.00R
+
+----------------------------------------------------------------------------------------------------
+FEE MODEL: hl (0.090% round trip on notional)
+----------------------------------------------------------------------------------------------------
+  source rule: 1-tick stop       n=132 gross=+0.030R  net=-0.462R  W/L/BE=68/64/0  win=  52%  totNet= -60.92R  ambig=1  SKIP=116
+  wider: stop 1.0x avg range     n=248 gross=+0.040R  net=-0.688R  W/L/BE=129/119/0  win=  52%  totNet=-170.69R  ambig=7
+  wider: stop 2.0x avg range     n=248 gross=+0.016R  net=-0.348R  W/L/BE=126/122/0  win=  51%  totNet= -86.34R  ambig=1
+  wider: stop 3.0x avg range     n=248 gross=+0.032R  net=-0.211R  W/L/BE=128/120/0  win=  52%  totNet= -52.23R
+  wider: stop 4.0x avg range     n=248 gross=-0.008R  net=-0.190R  W/L/BE=123/125/0  win=  50%  totNet= -47.17R
+
+----------------------------------------------------------------------------------------------------
+FEE MODEL: okx (0.160% round trip on notional)
+----------------------------------------------------------------------------------------------------
+  source rule: 1-tick stop       n= 85 gross=+0.035R  net=-0.604R  W/L/BE=44/41/0  win=  52%  totNet= -51.33R  SKIP=163
+  wider: stop 1.0x avg range     all 248 signals skipped (fee > 1R)
+  wider: stop 2.0x avg range     n=248 gross=+0.016R  net=-0.631R  W/L/BE=126/122/0  win=  51%  totNet=-156.61R  ambig=1
+  wider: stop 3.0x avg range     n=248 gross=+0.032R  net=-0.399R  W/L/BE=128/120/0  win=  52%  totNet= -99.07R
+  wider: stop 4.0x avg range     n=248 gross=-0.008R  net=-0.332R  W/L/BE=123/125/0  win=  50%  totNet= -82.31R
+
+====================================================================================================
+BREAKEVEN RULE on the wider (2x range) stop, HL fees
+====================================================================================================
+  no breakeven                   n=248 gross=+0.016R  net=-0.348R  W/L/BE=126/122/0  win=  51%  totNet= -86.34R  ambig=1
+  BE 50%                         n=248 gross=-0.089R  net=-0.453R  W/L/BE=57/79/112  win=  23%  totNet=-112.34R  ambig=36
+  BE 68%                         n=248 gross=-0.190R  net=-0.554R  W/L/BE=52/99/97  win=  21%  totNet=-137.34R  ambig=50
+  BE 75%                         n=248 gross=-0.238R  net=-0.602R  W/L/BE=48/107/93  win=  19%  totNet=-149.34R  ambig=59
+
+====================================================================================================
+CHRONOLOGICAL FOLDS (rules frozen), wider 2x-range stop, HL fees
+====================================================================================================
+  fold 1 2026-02-05..2026-04-09  n= 63 gross=+0.140R  net=-0.102R  W/L/BE=36/27/0  win=  57%  totNet=  -6.44R
+  fold 2 2026-04-09..2026-06-10  n= 61 gross=-0.016R  net=-0.437R  W/L/BE=30/31/0  win=  49%  totNet= -26.69R
+  fold 3 2026-06-10..2026-08-12  n= 63 gross=+0.016R  net=-0.435R  W/L/BE=32/31/0  win=  51%  totNet= -27.39R
+  fold 4 2026-08-12..2026-10-13  n= 61 gross=+0.082R  net=-0.399R  W/L/BE=33/28/0  win=  54%  totNet= -24.36R
+
+====================================================================================================
+SIGNIFICANCE (gross, 2x-range stop, whole sample)
+====================================================================================================
+  n=248  gross meanR=+0.016  sd=1.000  t=+0.25
+  95% bootstrap CI: [-0.105, +0.137]
+  NOTE: PAXG is a proxy; a positive result here is evidence about the
+  pattern in gold, not proof of edge on xyz:GOLD or CME GC.

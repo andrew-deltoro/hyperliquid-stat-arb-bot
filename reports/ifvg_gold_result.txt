@@ -1,0 +1,90 @@
+============================================================================================
+IFVG GOLD BACKTEST  (xyz:GOLD, 15m, Hyperliquid HIP-3)
+============================================================================================
+  candles      : 5016
+  span         : 2026-08-22 15:00:00+00:00 -> 2026-10-13 20:45:00+00:00
+  days         : 52.2
+  price range  : 4071.10 .. 4696.90
+  sessions 00:00-08:00 UTC     : 52
+  sessions 23:00-07:00 UTC     : 52
+  sessions 01:00-09:00 UTC     : 52
+
+============================================================================================
+HEADLINE: first IFVG per Asian session, 1:1, BE at 68%
+  Both bounds are shown: 'pess' resolves unresolved intrabar sequences
+  to the worse outcome, 'opt' to the better. Truth lies between.
+============================================================================================
+  base (00-08 UTC, BE 68%)         n= 41  pess=-0.899R  opt=-0.362R  win= 9.8%/46.3%  totR= -36.85/ -14.85  AMBIG=22  skip=10
+
+  signals generated: 51   tradable after degenerate-R filter: 41
+  exit mix: be_vs_target_ambiguous=21, breakeven=5, stop=10, stop_vs_target_ambiguous=1, target=4
+
+============================================================================================
+SENSITIVITY: the choices the source post leaves open
+============================================================================================
+
+  -- session window --
+  23:00-07:00                      n= 42  pess=-1.026R  opt=-0.503R  win= 7.1%/47.6%  totR= -43.11/ -21.11  AMBIG=22  skip=9
+  01:00-09:00                      n= 42  pess=-0.968R  opt=-0.611R  win=16.7%/40.5%  totR= -40.68/ -25.68  AMBIG=15  skip=9
+  00:00-12:00 (half day)           n= 42  pess=-0.918R  opt=-0.394R  win= 9.5%/45.2%  totR= -38.55/ -16.55  AMBIG=22  skip=10
+
+  -- breakeven rule (source claims ~68%) --
+  no breakeven                     n= 41  pess=-0.435R  opt=-0.435R  win=48.8%/48.8%  totR= -17.85/ -17.85  skip=10
+  BE at 50%                        n= 41  pess=-0.826R  opt=-0.387R  win=14.6%/41.5%  totR= -33.85/ -15.85  AMBIG=18  skip=10
+  BE at 68% (claimed)              n= 41  pess=-0.899R  opt=-0.362R  win= 9.8%/46.3%  totR= -36.85/ -14.85  AMBIG=22  skip=10
+  BE at 75%                        n= 41  pess=-0.899R  opt=-0.362R  win= 9.8%/46.3%  totR= -36.85/ -14.85  AMBIG=22  skip=10
+  BE at 95%                        n= 41  pess=-1.069R  opt=-0.460R  win= 2.4%/46.3%  totR= -43.85/ -18.85  AMBIG=25  skip=10
+
+  -- original FVG must form in-session? --
+  in-session FVG only              n= 41  pess=-0.899R  opt=-0.362R  win= 9.8%/46.3%  totR= -36.85/ -14.85  AMBIG=22  skip=10
+  prior FVG allowed                n= 41  pess=-0.899R  opt=-0.362R  win= 9.8%/46.3%  totR= -36.85/ -14.85  AMBIG=22  skip=10
+
+============================================================================================
+COST ANALYSIS: the risk unit is smaller than the round-trip fee
+============================================================================================
+  avg 15m range      : $5.02
+  round-trip fee     : $3.75  (0.09% of $4162)
+  median stop (R)    : $6.70
+  => fee as fraction of median R : 0.56R per trade
+  R needed for fee to cost <=0.20R: $18.73
+  R deciles ($): [1.4, 2.7, 4.0, 6.7, 9.9, 12.3, 35.5]
+
+  -- stop width sweep (NOT the source rule; a rescue test) --
+     stop = k * avg_bar_range, entry still next open after inversion
+  stop 0.5x avg range        n= 51  meanR=-1.360  totR= -69.37  win=  0.0%
+  stop 1.0x avg range        n= 51  meanR=-0.661  totR= -33.69  win= 52.9%
+  stop 2.0x avg range        n= 51  meanR=-0.271  totR= -13.84  win= 54.9%
+  stop 3.0x avg range        n= 51  meanR=-0.161  totR=  -8.23  win= 54.9%
+
+============================================================================================
+WALK-FORWARD: split the 52 days in half, rules frozen
+============================================================================================
+  FIRST half (in-sample): 2026-08-22 -> 2026-09-17
+    FIRST half (in-sample)         n= 21  pess=-0.819R  opt=-0.486R  win=14.3%/42.9%  totR= -17.21/ -10.21  AMBIG=7  skip=5
+  SECOND half (out-of-sample): 2026-09-17 -> 2026-10-13
+    SECOND half (out-of-sample)    n= 22  pess=-1.243R  opt=-0.471R  win= 4.5%/45.5%  totR= -27.35/ -10.35  AMBIG=17  skip=3
+
+============================================================================================
+SANITY ANCHOR: random entries in the same session (no signal)
+============================================================================================
+  mean R across 60 random samples: -0.027
+  (this is the bar a real edge must clear)
+
+============================================================================================
+SIGNIFICANCE: is any of this distinguishable from noise?
+============================================================================================
+  sample size: 41 trades over 52 days (5.5 per week)
+  GROSS  meanR=+0.317  win=27/41=65.9%  binomial p=0.060 (two-sided, H0: 50%)
+  GROSS meanR 95% bootstrap CI: [+0.024, +0.610]  (excludes 0)
+  NET    meanR=-0.435  total=-17.85R
+
+  CAVEATS, stated plainly:
+   * 41 usable trades is a tiny sample. Nothing here is decisive.
+   * The window is ~7 weeks of a single gold regime; no multi-regime
+     evidence exists because xyz:GOLD only has ~7 weeks of 15m data.
+   * The sensitivity grid above is ~15 configurations. Testing many
+     variants on one short sample manufactures false positives; the
+     grid is reported for transparency, not to be mined for a winner.
+   * 22 of 41 trades sit in an ambiguous intrabar order. The true
+     result lies between the pess and opt bounds, not at either end.
+   * 1m data (which would resolve the ambiguity) covers only ~3.6 days.
