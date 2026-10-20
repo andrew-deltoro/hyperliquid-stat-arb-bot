@@ -2,6 +2,8 @@
 negative beta (M9), quantity-based PnL (M4), dry-run sizing path."""
 from __future__ import annotations
 
+import csv
+
 import pytest
 
 from src.hyperliquid_bot.phase3 import journal
@@ -167,8 +169,13 @@ def test_journal_migrates_header_when_columns_change(isolated_files):
     path.write_text("pair,pnl_pct\nAAA/BBB,0.01\n")
     journal._ensure_file(path, journal.TRADES_COLUMNS)
     header = path.read_text().splitlines()[0].split(",")
-    assert header == journal.TRADES_COLUMNS
+    # Every canonical column is present and pre-existing data survives.
+    # Order of any legacy column already on disk is preserved rather than
+    # normalized, because columns are addressed by name when writing.
+    assert set(header) == set(journal.TRADES_COLUMNS)
+    assert len(header) == len(set(header))
     assert "AAA/BBB" in path.read_text()
+    assert next(csv.DictReader(path.open()))["pnl_pct"] == "0.01"
 
 
 def test_dry_run_kelly_sizing_respects_safeguard_cap(tmp_path):
@@ -242,3 +249,70 @@ def test_time_stop_still_fires_when_the_gate_is_silent(tmp_path):
     # No fresh beta -> no trigger, so the horizon must still close the trade.
     res = pm.evaluate_open("AAA/BBB", pa, pb, fresh_beta=None)
     assert res["action"] == "closed" and res["reason"] == "time_stop"
+
+
+# --------------------------------------------------------------------------
+# Asymmetric beta_shift threshold: a drift observed while the trade is already
+# reverting is mostly benign (65% of journal beta_shift exits fired while the
+# spread was ahead of entry), so demand a larger drift on the winning side.
+# --------------------------------------------------------------------------
+def _pm_with_spread(tmp_path, current_spread, entry_spread):
+    """Build a LIVE_A_SHORT_B position whose centred spread is `current_spread`.
+
+    mean_raw is pinned so that at (10, 20) the centred spread is 0; scaling
+    price_a by exp(current_spread) therefore yields exactly that centred value.
+    """
+    import math
+    hl = FakeHL({"AAA": 10.0, "BBB": 20.0})
+    hl.positions = {"AAA": 10.0, "BBB": -5.0}
+    pm, _ = make_pm(hl, tmp_path)
+    open_position(pm, size_a=10.0, size_b=-5.0, beta_sd_entry=0.01,
+                  entry_alpha=0.0, entry_mean_raw=0.0)
+    pb = 20.0
+    pm.state.positions[0]["entry_mean_raw"] = math.log(10.0) - math.log(pb)
+    pm.state.positions[0]["entry_spread"] = entry_spread
+    pa = 10.0 * math.exp(current_spread)
+    return pm, pa, pb
+
+
+def test_beta_shift_holds_on_ahead_trade_at_moderate_drift(tmp_path):
+    # Spread is AHEAD (reverting up from -0.02 toward 0): 3σ drift, which is
+    # below the 4.0 'when ahead' threshold -> hold, not an early clip.
+    pm, pa, pb = _pm_with_spread(tmp_path, current_spread=-0.01,
+                                 entry_spread=-0.02)
+    res = pm.evaluate_open("AAA/BBB", pa, pb, fresh_beta=1.03,
+                           fresh_beta_sd=0.01, fresh_exp_return=-0.01)
+    assert res["action"] == "hold"
+
+
+def test_beta_shift_still_fires_on_ahead_trade_at_large_drift(tmp_path):
+    # Same winning spread, but a genuinely huge 6σ drift -> still exits.
+    pm, pa, pb = _pm_with_spread(tmp_path, current_spread=-0.01,
+                                 entry_spread=-0.02)
+    res = pm.evaluate_open("AAA/BBB", pa, pb, fresh_beta=1.06,
+                           fresh_beta_sd=0.01, fresh_exp_return=-0.01)
+    assert res["action"] == "closed" and res["reason"] == "beta_shift"
+
+
+def test_beta_shift_uses_normal_threshold_when_behind(tmp_path):
+    # Spread is BEHIND (moved further from the mean) -> the live 2.0 threshold
+    # applies, so a 3σ drift still protects.
+    pm, pa, pb = _pm_with_spread(tmp_path, current_spread=-0.03,
+                                 entry_spread=-0.02)
+    res = pm.evaluate_open("AAA/BBB", pa, pb, fresh_beta=1.03,
+                           fresh_beta_sd=0.01, fresh_exp_return=-0.01)
+    assert res["action"] == "closed" and res["reason"] == "beta_shift"
+
+
+def test_is_ahead_of_entry_direction_aware(tmp_path):
+    pos_long = {"direction": "LONG_A_SHORT_B", "entry_spread": -0.02}
+    pos_short = {"direction": "SHORT_A_LONG_B", "entry_spread": -0.02}
+    mk = PositionManager
+    # long_a is ahead when the spread RISES from entry
+    assert mk._is_ahead_of_entry(pos_long, -0.01) is True
+    assert mk._is_ahead_of_entry(pos_long, -0.03) is False
+    # short_a is ahead when the spread FALLS from entry
+    assert mk._is_ahead_of_entry(pos_short, -0.03) is True
+    assert mk._is_ahead_of_entry(pos_short, -0.01) is False
+    # no entry_spread -> never 'ahead' (safe default: normal threshold)
+    assert mk._is_ahead_of_entry({"direction": "LONG_A_SHORT_B"}, -0.01) is False

@@ -111,6 +111,15 @@ position:
   # Beta-drift trigger: |Δβ| / posterior sd(β). Only a trigger; the exit also
   # requires a non-positive posterior predictive net PnL on the spread.
   beta_shift_min_posterior_sd: 2.0
+  # Asymmetric threshold when the spread is ALREADY AHEAD of entry (the trade
+  # is winning). Journal evidence over 17 beta_shift exits: 65% fired while
+  # ahead (mean +20% reversion captured) and only 35% while behind. Re-estimating
+  # beta over a 30d window as the spread reverts makes ordinary reversion look
+  # like beta drift, so on the winning side the trigger is mostly a false
+  # positive. Demand a much larger drift there before closing; keep 2.0 when the
+  # trade is behind, which is where the gate earns its keep (all 6 behind-side
+  # exits were losses it avoided).
+  beta_shift_min_posterior_sd_when_ahead: 4.0
 risk:
   max_concurrent_positions: 10
   # Gross leg notional (|leg A| + |leg B|) across open pairs.

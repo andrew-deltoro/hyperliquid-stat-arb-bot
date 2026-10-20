@@ -534,6 +534,26 @@ class PositionManager:
         return False, detail
 
     # ---------------- monitor & close ----------------
+    @staticmethod
+    def _is_ahead_of_entry(pos: dict, current_centered: float) -> bool:
+        """True when the spread has reverted PAST where it was at entry.
+
+        'Ahead' means the trade is currently winning on the spread: for a
+        LONG_A_SHORT_B position (bought a cheap spread) the spread has risen
+        toward/past the mean; for SHORT_A_LONG_B it has fallen. Used to make
+        the beta-drift threshold asymmetric: a drift observed while the trade
+        is already reverting is much more likely to be benign re-estimation
+        than a genuine structural break.
+        """
+        entry_spread = float(pos.get("entry_spread") or 0.0)
+        if not entry_spread:
+            return False
+        long_a = pos.get("direction") == "LONG_A_SHORT_B"
+        progress = (current_centered - entry_spread) if long_a else (
+            entry_spread - current_centered
+        )
+        return progress > 0.0
+
     def evaluate_open(
         self,
         pair: str,
@@ -695,7 +715,28 @@ class PositionManager:
             posterior_drift = (
                 abs(fresh_beta - beta_entry) / beta_sd if beta_sd > 0 else 0.0
             )
-            if beta_sd > 0 and posterior_drift >= min_z:
+
+            # ASYMMETRIC THRESHOLD (finding: the gate fires on the wrong
+            # population). Journal evidence over 17 beta_shift exits:
+            #   65% fired while the spread was AHEAD of entry (already
+            #       reverting, mean +20% of entry displacement) -- these are
+            #       premature exits that clip winners;
+            #   35% fired while BEHIND (losing) -- genuine protection, those
+            #       six trades were all negative.
+            # Mechanism: re-estimating beta over a 30d window while the spread
+            # reverts makes ordinary reversion LOOK like beta drift, so the
+            # trigger is a false-positive generator on the winning side.
+            # Therefore: when the trade is ahead, demand a much larger drift
+            # before closing; when it is behind, keep the live threshold.
+            ahead = self._is_ahead_of_entry(pos, current_centered)
+            eff_min_z = min_z
+            if ahead:
+                eff_min_z = float(
+                    self.cfg.position.get(
+                        "beta_shift_min_posterior_sd_when_ahead", 4.0
+                    )
+                )
+            if beta_sd > 0 and posterior_drift >= eff_min_z:
                 # Route through the shared economics gate. Required (not held)
                 # so unbackfilled positions are made safe on their next beta
                 # drift instead of being force-closed.
@@ -708,6 +749,8 @@ class PositionManager:
                         "beta_now": round(float(fresh_beta), 6),
                         "beta_sd": round(float(beta_sd), 6),
                         "posterior_drift_sd": round(float(posterior_drift), 3),
+                        "threshold_sd": round(float(eff_min_z), 3),
+                        "spread_ahead_of_entry": bool(ahead),
                         "gate": detail,
                         "time_stop_due": bool(
                             datetime.now(timezone.utc) >= _parse_iso(pos["time_stop_iso"])
