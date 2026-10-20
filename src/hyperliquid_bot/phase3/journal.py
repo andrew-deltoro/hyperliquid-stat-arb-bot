@@ -70,6 +70,11 @@ SIGNALS_COLUMNS = [
     "skip_reason",
     "exp_return", "stress_loss_frac", "eg_tstat",
     "shock_side", "shock_hours_since", "shock_magnitude",
+    # Observation-only: what a FROZEN bounded |z| tilt *would* have sized here.
+    # Never used for execution (see phase3/conviction.py). Logged so the
+    # conviction-sizing question can be re-tested on future episodes without
+    # look-ahead.
+    "cf_weight",
 ]
 
 
@@ -174,6 +179,12 @@ def log_signal(sig) -> None:
         "shock_hours_since": "" if hs is None else str(int(hs)),
         "shock_magnitude": "" if not shock.get("is_shock") else f"{shock.get('magnitude', 0.0):.6f}",
     })
+    # Observation-only conviction weight (frozen rule; never affects sizing).
+    try:
+        from .conviction import counterfactual_weight
+        row["cf_weight"] = f"{counterfactual_weight(sig.z):.4f}"
+    except Exception:
+        row["cf_weight"] = ""
     _append_row(SIGNALS_FILE, SIGNALS_COLUMNS, row)
 
 
